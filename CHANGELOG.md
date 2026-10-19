@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.4.0 (2026-10-19)
+
+After upgrading, reflash the keyboard with `sudo pt35-kbd flash` and run
+`pt35-ai agents --reset` if you use the AI agent. The firmware and the agent
+rules below only take effect then.
+
+### Security
+
+- Joining a Wi-Fi network no longer runs its name as a shell command. Before,
+  picking a nearby network named `$(...)` ran that command. The menu now passes
+  the name to nmcli as an argument.
+- The Default and Code agents ask before they run `git diff` or `git log`. The
+  `--output` flag of either can overwrite any file.
+
+### Fixed
+
+- Pressing `2` on a confirmation such as Shut down or Close all no longer
+  answers Yes.
+- The face buttons keep working after a sway reload with `$mod+Shift+c`. pt35d
+  sees the reload and binds them again.
+- The patched firmware prints nothing but its brightness answer. Its debug
+  output could fill the console buffer and stop the keyboard.
+- `B50` now reads back 50, not 49. Fn `-` stops at 5% instead of turning the
+  panel off. Letting go of Fn before Select takes the screenshot and no longer
+  opens the switcher.
+- A typo in one theme file now drops only that file, and the menu shows which
+  file and line. The next Appearance pick no longer wipes a broken
+  `appearance.toml`. The shell writes picks, pins and recents to a temporary
+  file and renames it, so a power cut cannot leave half a file.
+- When a window closes, the switcher's cursor stays on the window it was on.
+  Closing a card behind you no longer moves you to another app.
+- A search you are typing stays when a Bluetooth or Wi-Fi scan refreshes the
+  list.
+- A tap on a filtered Quick panel changes the row you tapped. The sliders move
+  on each press instead of a press or two later.
+- Each app with a profile shows once in the launcher and always starts with
+  its profile. A `.desktop` file in `~/.local/share/applications` overrides the
+  system copy, and one with `Hidden=true` hides the app. The launcher reads
+  `XDG_DATA_DIRS` and checks `TryExec`, `OnlyShowIn` and `NotShowIn`.
+- You can join a Wi-Fi network whose name has a `:` or `\` in it. The Quick
+  panel shows the network's SSID and whether the radio is on.
+- Apps started from the shell no longer stay behind as zombie processes.
+- pt35d asks a stock keyboard for its firmware three times per plug-in instead
+  of every 10 seconds, so `pt35-kbd flash` gets through. It notices when
+  `pt35-kbd restore` takes the patched firmware away.
+- With pt35d not running, the menu can still close. The sway config restarts
+  pt35d and the bar when they die.
+- A helper that hangs, such as wpctl, bluetoothctl, nmcli or grim, no longer
+  hangs the daemon or a menu screen. Each one now has a time limit.
+- The bar shows the wired icon only with a cable in, and never a `--` battery.
+  With many windows open it shrinks the dock slots instead of drawing them
+  under the status icons.
+- The menu draws the last frame of each glide, so the highlight lands exactly
+  on its row.
+- Menu errors are visible. The hint bar used to cover the error line.
+- The wheel stops at the end of a list instead of jumping to the other end.
+  Releasing a scrollbar drag over a row no longer opens that row. In Mouse
+  mode, tapping the B pill opens the row's options, as pressing B does.
+- Uninstalling a source install through curl now also undoes the greetd setup.
+- postinst no longer creates a missing `~/.config` owned by root.
+- `pt35-ai` downloads a model again when its pinned checksum changes.
+- `pt35-kbd write` checks the new file before it replaces the old one.
+
+### Changed
+
+- A, B and X no longer repeat in Buttons mode. Holding one while the menu
+  opened could crash sway 1.10.
+- Qt apps fall back to XWayland when the Qt Wayland plugin is missing.
+
 ## 0.3.2 (2026-09-24)
 
 ### Fixed
