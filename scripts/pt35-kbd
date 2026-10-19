@@ -13,8 +13,9 @@ its own filesystem while the host cannot see it, which is what makes this work.
   pt35-kbd write code.py some/code.py
 
 Interrupting `write` leaves the old file in place: the new one is written beside
-it and renamed at the end. If the keyboard ever stops responding as a keyboard,
-this port still answers, so a bad file can always be replaced.
+it, checked, and renamed only if it matches. If the keyboard ever stops
+responding as a keyboard, this port still answers, so a bad file can always be
+replaced.
 """
 
 import argparse
@@ -32,11 +33,25 @@ CHUNK = 512
 # code.py logs to this port while it runs, so frame the payload and read only
 # what is inside the markers.
 START, END = b"<<<PT35", b">>>PT35"
+# pt35d watches this file's mtime. A reload of code.py does not replug the
+# keyboard, so it is the only way pt35d learns the firmware changed.
+FLASHED = "/run/pt35-kbd.flashed"
+
+
+def mark_flashed():
+    try:
+        with open(FLASHED, "a"):
+            pass
+        os.utime(FLASHED)
+    except OSError:
+        pass
 
 
 class Keyboard:
     def __init__(self, port=PORT):
         self.serial = serial.Serial(port, 115200, timeout=2)
+        # Set once code.py on the board may differ from what was there.
+        self.changed = False
         # pt35d talks to this port too (the backlight). A line of its landing
         # in the REPL mid-write breaks the flash, so hold the port alone. It
         # skips its turn while this lock is held.
@@ -64,6 +79,8 @@ class Keyboard:
     def __exit__(self, *_):
         self.serial.write(b"\x02\x04")  # normal REPL, then reload code.py
         self.serial.close()
+        if self.changed:
+            mark_flashed()
 
     def _drain(self, quiet=0.4):
         """Read until the port has been silent for `quiet` seconds.
@@ -85,10 +102,10 @@ class Keyboard:
         self.serial.write(code.encode() + b"\x04")
         out = b""
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while out.count(b"\x04") < 2:
+            if time.time() >= deadline:
+                raise TimeoutError(f"the keyboard did not finish a command in {timeout}s")
             out += self.serial.read(self.serial.in_waiting or 1)
-            if out.count(b"\x04") >= 2:
-                break
         body, _, err = out.partition(b"\x04")
         err = err.split(b"\x04")[0]
         if err.strip():
@@ -111,7 +128,10 @@ while i < len(d):
 print("{END.decode()}")
 """
     for attempt in range(attempts):
-        out = kbd.run(code)
+        try:
+            out = kbd.run(code)
+        except TimeoutError:
+            out = b""
         if START in out and END in out:
             payload = out.split(START, 1)[1].split(END, 1)[0]
             try:
@@ -132,6 +152,10 @@ def write(kbd, name, data):
         kbd.run(
             f'import binascii\nf = open("/{name}.new", "ab")\nf.write(binascii.a2b_base64("{blob}"))\nf.close()'
         )
+    if hashlib.sha256(dump(kbd, f"{name}.new")).hexdigest() != digest:
+        raise SystemExit(f"{name}.new on the keyboard does not match what was sent; /{name} is unchanged")
+    kbd.changed = True
+    # The rename deletes the old file first, so check what is live too.
     kbd.run(f'import os\nos.rename("/{name}.new", "/{name}")')
     if hashlib.sha256(dump(kbd, name)).hexdigest() != digest:
         raise SystemExit(f"{name} on the keyboard does not match what was sent")
@@ -157,16 +181,19 @@ def main():
             raise SystemExit(f"{args.source} is missing; set PT35_FIRMWARE")
         args.action = "write"
 
-    with Keyboard(args.port) as kbd:
-        if args.action == "files":
-            print(kbd.run("import os\nprint(os.listdir('/'))").decode().strip())
-        elif args.action == "dump":
-            sys.stdout.buffer.write(dump(kbd, args.name))
-        else:
-            with open(args.source, "rb") as handle:
-                data = handle.read()
-            digest = write(kbd, args.name, data)
-            print(f"wrote {len(data)} bytes to /{args.name}, sha256 {digest[:16]}")
+    try:
+        with Keyboard(args.port) as kbd:
+            if args.action == "files":
+                print(kbd.run("import os\nprint(os.listdir('/'))").decode().strip())
+            elif args.action == "dump":
+                sys.stdout.buffer.write(dump(kbd, args.name))
+            else:
+                with open(args.source, "rb") as handle:
+                    data = handle.read()
+                digest = write(kbd, args.name, data)
+                print(f"wrote {len(data)} bytes to /{args.name}, sha256 {digest[:16]}")
+    except (RuntimeError, TimeoutError) as err:
+        raise SystemExit(f"pt35-kbd {args.action}: {err}") from None
 
 
 if __name__ == "__main__":

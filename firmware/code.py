@@ -20,7 +20,9 @@ import sys
 # ============================================================
 class Config:
     """系统配置"""
-    DEBUG = True
+    # Off: the host keeps the USB console open but reads it only right after
+    # a request. Any other print fills the buffer and blocks the scan loop.
+    DEBUG = False
     PWM_FREQUENCY = 5000
     DEBOUNCE_DELAY = 0.05
     SCAN_INTERVAL = 0.01
@@ -48,17 +50,19 @@ class Logger:
     
     @staticmethod
     def info(*args, **kwargs):
-        try:
-            print("[INFO]", *args, **kwargs)
-        except:
-            pass
+        if Config.DEBUG:
+            try:
+                print("[INFO]", *args, **kwargs)
+            except:
+                pass
     
     @staticmethod
     def error(*args, **kwargs):
-        try:
-            print("[ERROR]", *args, **kwargs)
-        except:
-            pass
+        if Config.DEBUG:
+            try:
+                print("[ERROR]", *args, **kwargs)
+            except:
+                pass
 
 
 # ============================================================
@@ -222,6 +226,9 @@ class MatrixScanner:
         self._key_map = key_map
         self._fn_map = fn_map
         self._fn_key_code = fn_key_code
+        # pt35-desktop: (row, col) -> the code a held key got when it went
+        # down. Releasing Fn first must not turn Print into Select.
+        self._held = {}
         
         self._row_gpio = self._setup_rows()
         self._col_gpio = self._setup_cols()
@@ -271,9 +278,17 @@ class MatrixScanner:
         
         active_map = self._fn_map if fn_active else self._key_map
         
-        translated_keys = set()
+        held = {}
         for row_index, col_index in keys_pressed:
-            key = active_map[row_index][col_index]
+            pos = (row_index, col_index)
+            if pos in self._held:
+                held[pos] = self._held[pos]
+            else:
+                held[pos] = active_map[row_index][col_index]
+        self._held = held
+        
+        translated_keys = set()
+        for key in held.values():
             if key is not None:
                 translated_keys.add(key)
         
@@ -450,11 +465,13 @@ class BreathingLightController:
 class PWMController:
     """PWM 控制器（支持取反电路）"""
     
-    def __init__(self, pin_manager: PinManager, pwm_name: str, inverted: bool = False):
+    def __init__(self, pin_manager: PinManager, pwm_name: str, inverted: bool = False,
+                 dimmest: int = None):
         self._pin_manager = pin_manager
         self._pwm_name = pwm_name
         self._step = Config.PWM_STEP
         self._inverted = inverted  # 是否取反
+        self._dimmest = dimmest
     
     def increase(self):
         """增加占空比"""
@@ -473,6 +490,8 @@ class PWMController:
         if self._inverted:
             # 取反电路：减少实际亮度 = 增大 PWM 值
             new_value = min(Config.PWM_MAX, current + self._step)
+            if self._dimmest is not None:
+                new_value = min(self._dimmest, new_value)
         else:
             new_value = max(Config.PWM_MIN, current - self._step)
         self._pin_manager.set_pwm_value(self._pwm_name, new_value)
@@ -554,7 +573,9 @@ class KeyboardController:
             self.pin_manager, "gp22", "gp21", self.hid, self.scanner, self.processor
         )
         # 背光 PWM 设置了 inverted=True（因为有取反电路）
-        self.bl_pwm = PWMController(self.pin_manager, "bl_pwm", inverted=True)
+        # pt35-desktop: Fn brightness down stops at the floor the host gets.
+        self.bl_pwm = PWMController(self.pin_manager, "bl_pwm", inverted=True,
+                                    dimmest=self._backlight_duty(self.BL_FLOOR))
         self.ad_pwm = PWMController(self.pin_manager, "ad_pwm", inverted=False)
     
     def _setup_special_functions(self):
@@ -700,10 +721,14 @@ class KeyboardController:
     # device with no other screen is not a brightness.
     BL_FLOOR = 5
 
+    # Inverted circuit: duty 0 is full brightness.
+    def _backlight_duty(self, percent):
+        return Config.PWM_MAX - percent * Config.PWM_MAX // 100
+
+    # Rounded, not floored, so `B<n>` answers n.
     def _backlight_percent(self):
         duty = self.pin_manager.get_pwm_value("bl_pwm")
-        # Inverted circuit: duty 0 is full brightness.
-        return (Config.PWM_MAX - duty) * 100 // Config.PWM_MAX
+        return ((Config.PWM_MAX - duty) * 100 + Config.PWM_MAX // 2) // Config.PWM_MAX
 
     def _host_command(self, line):
         line = line.strip()
@@ -711,8 +736,7 @@ class KeyboardController:
             pass
         elif line.startswith("B") and line[1:].isdigit():
             percent = max(self.BL_FLOOR, min(100, int(line[1:])))
-            duty = Config.PWM_MAX - percent * Config.PWM_MAX // 100
-            self.pin_manager.set_pwm_value("bl_pwm", duty)
+            self.pin_manager.set_pwm_value("bl_pwm", self._backlight_duty(percent))
         else:
             return
         print("PT35 B=%d" % self._backlight_percent())
