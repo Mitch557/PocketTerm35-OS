@@ -24,6 +24,8 @@ pub struct Item {
     pub active: bool,
     /// A colour swatch drawn in place of the icon.
     pub tint: Option<Rgb>,
+    /// What a search matches besides the label. Empty means the payload.
+    pub search: String,
 }
 
 impl Item {
@@ -121,9 +123,17 @@ fn brightness_levels() -> Items {
 /// daemon with its profile, `exec:` is a plain command line.
 fn launcher() -> Items {
     let mut out: Items = Vec::new();
-    let apps: pt35_common::apps::AppTable =
-        pt35_common::load_config("pt35/apps.toml").unwrap_or_default();
+    let apps: pt35_common::apps::AppTable = pt35_common::load_config("pt35/apps.toml");
+    let mut programs: Vec<String> = Vec::new();
     for (id, app) in &apps.apps {
+        // The window it makes and the program it is about: "foot" finds
+        // Terminal, "yazi" finds Files. Not every program it runs, or "foot"
+        // would find every app that runs in a terminal.
+        let window = [&app.match_.app_id, &app.match_.class]
+            .into_iter()
+            .flatten()
+            .map(|name| name.to_lowercase());
+        let search: Vec<String> = window.chain(program_of(&app.exec)).collect();
         out.push(Item {
             label: if app.label.is_empty() {
                 pretty_app(id)
@@ -134,16 +144,30 @@ fn launcher() -> Items {
             note: String::new(),
             glyph: app.glyph.clone(),
             icon: app.icon.clone(),
+            search: format!("{id} {}", search.join(" ")),
             ..Item::default()
         });
+        // Every program it runs, for telling a .desktop copy of it: Terminal is
+        // `foot pt35-hello`, and Foot is it. Not a program that only starts
+        // others: a profile run through flatpak would hide every flatpak.
+        programs.extend(
+            programs_of(&app.exec)
+                .into_iter()
+                .filter(|p| !LAUNCHERS.contains(&p.as_str())),
+        );
     }
 
-    let theme = pt35_common::load_theme().unwrap_or_default();
+    let theme = pt35_common::load_theme();
     // Anything else with a .desktop file, so search covers the whole machine.
+    // Not a second copy of a profiled app: "Mousepad" is the Editor, and its
+    // .desktop copy would launch without the profile's scale and flags.
     if theme.menu.show_desktop_entries {
         let known: Vec<String> = out.iter().map(|i| i.label.to_lowercase()).collect();
         for mut entry in desktop_entries() {
-            if !known.contains(&entry.label.to_lowercase()) {
+            let program = program_of(&entry.payload);
+            let profiled = program.as_ref().is_some_and(|p| programs.contains(p));
+            if !profiled && !known.contains(&entry.label.to_lowercase()) {
+                entry.search = program.unwrap_or_default();
                 entry.payload = format!("exec:{}", entry.payload);
                 out.push(entry);
             }
@@ -161,25 +185,54 @@ fn launcher() -> Items {
     out
 }
 
+/// Programs that start other programs, and so say nothing about which app it is.
+const LAUNCHERS: &[&str] = &[
+    "env", "flatpak", "python", "python3", "sudo", "pkexec", "nice",
+];
+
+/// The programs a command line runs, by file name, lowercase: for a terminal,
+/// the terminal and then what runs in it.
+fn programs_of(exec: &str) -> Vec<String> {
+    pt35_common::apps::command_programs(exec)
+        .iter()
+        .map(|program| program.rsplit('/').next().unwrap_or(program).to_lowercase())
+        .collect()
+}
+
+/// The program a command line is really about: for a terminal, the one in it.
+fn program_of(exec: &str) -> Option<String> {
+    programs_of(exec).pop()
+}
+
 /// What you pinned, first pinned first.
 pub fn pins() -> Vec<String> {
-    std::fs::read_to_string(pt35_common::paths::pins_path())
-        .map(|text| parse_list(&text))
-        .unwrap_or_default()
+    read_pins().unwrap_or_default()
+}
+
+fn read_pins() -> std::io::Result<Vec<String>> {
+    match std::fs::read_to_string(pt35_common::paths::pins_path()) {
+        Ok(text) => Ok(parse_list(&text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
 }
 
 fn parse_list(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if !line.is_empty() && !out.iter().any(|seen| seen == line) {
+            out.push(line.to_string());
+        }
+    }
+    out
 }
 
 /// Pin a launcher row, or unpin it if it already is. Returns whether it is
 /// pinned now.
 pub fn toggle_pin(payload: &str) -> std::io::Result<bool> {
-    let mut list = pins();
+    // A file that cannot be read is not an empty one: writing the new pin alone
+    // would drop every other.
+    let mut list = read_pins()?;
     let pinned = if let Some(at) = list.iter().position(|p| p == payload) {
         list.remove(at);
         false
@@ -187,11 +240,10 @@ pub fn toggle_pin(payload: &str) -> std::io::Result<bool> {
         list.push(payload.to_string());
         true
     };
-    let path = pt35_common::paths::pins_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, list.join("\n") + "\n")?;
+    pt35_common::write_atomic(
+        &pt35_common::paths::pins_path(),
+        (list.join("\n") + "\n").as_bytes(),
+    )?;
     Ok(pinned)
 }
 
@@ -355,7 +407,6 @@ pub fn duration(seconds: u64) -> String {
 pub fn quick() -> Items {
     let status = crate::live::status();
     let signal = status.as_ref().and_then(|s| s.network_signal);
-    let online = status.as_ref().and_then(|s| s.network.clone());
     let ethernet = status.as_ref().and_then(|s| s.ethernet.clone());
     let volume = status.as_ref().and_then(|s| s.volume_percent).unwrap_or(0);
     let muted = status.as_ref().and_then(|s| s.muted).unwrap_or(false);
@@ -366,15 +417,16 @@ pub fn quick() -> Items {
     let touch = status.as_ref().map(|s| s.touch_enabled).unwrap_or(true);
     let brightness = status.as_ref().and_then(|s| s.brightness_percent);
 
-    // A signal reading, not "online": with a cable in, online says nothing
-    // about the radio.
-    let wifi_on = signal.is_some();
+    // The radio, as the toggle reads it. A signal says only that it is joined:
+    // on but not connected read as off, and the toggle then turned it off.
+    let wifi_on = wifi_radio().unwrap_or(signal.is_some());
     let mut rows = vec![Item {
         label: "Wi-Fi".into(),
         payload: "sh:pt35-quick wifi toggle".into(),
         note: match (wifi_on, wifi_name()) {
             (true, Some(ssid)) => ssid,
-            (true, None) => online.clone().unwrap_or_else(|| "on".into()),
+            (true, None) if signal.is_some() => "on".into(),
+            (true, None) => "not connected".into(),
             (false, _) => String::new(),
         },
         glyph: switch(wifi_on),
@@ -418,38 +470,8 @@ pub fn quick() -> Items {
             icon: "input-touchpad".into(),
             ..Item::default()
         },
-        Item {
-            label: "Volume".into(),
-            payload: "adjust:volume".into(),
-            note: if muted {
-                "muted".into()
-            } else {
-                format!("{volume}%")
-            },
-            glyph: format!("slide:{}", if muted { 0 } else { volume }),
-            icon: pt35_ui::icon::volume_icon(volume, muted).into(),
-            ..Item::default()
-        },
-        match brightness {
-            // The keyboard's firmware answers: a slider like volume.
-            Some(level) => Item {
-                label: "Brightness".into(),
-                payload: "adjust:brightness".into(),
-                note: format!("{level}%"),
-                glyph: format!("slide:{level}"),
-                icon: "display-brightness".into(),
-                ..Item::default()
-            },
-            // Stock firmware keeps the PWM pin to itself: say which keys do it.
-            None => Item {
-                label: "Brightness".into(),
-                payload: String::new(),
-                note: "Fn  -  =".into(),
-                glyph: "read".into(),
-                icon: "display-brightness".into(),
-                ..Item::default()
-            },
-        },
+        volume_row(volume, muted),
+        brightness_row(brightness),
         Item {
             label: "Networks".into(),
             payload: "screen:wifi".into(),
@@ -496,27 +518,124 @@ pub fn parse_address(out: &str) -> Option<String> {
     Some(cidr.split('/').next()?.to_string())
 }
 
+fn volume_row(volume: u8, muted: bool) -> Item {
+    Item {
+        label: "Volume".into(),
+        payload: "adjust:volume".into(),
+        note: if muted {
+            "muted".into()
+        } else {
+            format!("{volume}%")
+        },
+        glyph: format!("slide:{}", if muted { 0 } else { volume }),
+        icon: pt35_ui::icon::volume_icon(volume, muted).into(),
+        ..Item::default()
+    }
+}
+
+const BRIGHTNESS: &str = "Brightness";
+
+fn brightness_row(level: Option<u8>) -> Item {
+    match level {
+        // The keyboard's firmware answers: a slider like volume.
+        Some(level) => Item {
+            label: BRIGHTNESS.into(),
+            payload: "adjust:brightness".into(),
+            note: format!("{level}%"),
+            glyph: format!("slide:{level}"),
+            icon: "display-brightness".into(),
+            ..Item::default()
+        },
+        // Stock firmware keeps the PWM pin to itself: say which keys do it.
+        None => Item {
+            label: BRIGHTNESS.into(),
+            payload: String::new(),
+            note: "Fn  -  =".into(),
+            glyph: "read".into(),
+            icon: "display-brightness".into(),
+            ..Item::default()
+        },
+    }
+}
+
+/// Move the quick panel's sliders to a fresh status, in place. A step has to
+/// show at once: reading the whole panel again forks nmcli and bluetoothctl
+/// and lands a press or two behind.
+pub fn patch_levels(items: &mut Items, status: &pt35_common::ipc::Status) {
+    for item in items.iter_mut() {
+        if item.payload == "adjust:volume" {
+            *item = volume_row(
+                status.volume_percent.unwrap_or(0),
+                status.muted.unwrap_or(false),
+            );
+        } else if item.label == BRIGHTNESS {
+            *item = brightness_row(status.brightness_percent);
+        }
+    }
+}
+
 fn switch(on: bool) -> String {
     if on { "switch:on" } else { "switch:off" }.to_string()
 }
 
 /// The network you are on, which is worth more than the interface name.
 /// From nmcli, which the Network screen needs anyway: iwgetid is not installed
-/// on Raspberry Pi OS Lite.
+/// on Raspberry Pi OS Lite. The SSID, not the connection's name: Pi Imager
+/// calls every one it makes "preconfigured". From the last scan, not a new one.
 fn wifi_name() -> Option<String> {
     let out = run(
         "nmcli",
-        &["-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+        &[
+            "-t",
+            "-f",
+            "ACTIVE,SSID",
+            "device",
+            "wifi",
+            "list",
+            "--rescan",
+            "no",
+        ],
     )?;
     active_wifi(&out)
 }
 
-/// nmcli terse lines are `NAME:TYPE`, with a `:` in the name escaped as `\:`.
+fn wifi_radio() -> Option<bool> {
+    run("nmcli", &["radio", "wifi"]).map(|out| out.trim() == "enabled")
+}
+
+/// `ACTIVE:SSID` lines; the one marked `yes` is the network you are on.
 pub fn active_wifi(out: &str) -> Option<String> {
     out.lines().find_map(|line| {
-        let name = line.strip_suffix(":802-11-wireless")?;
-        Some(name.replace("\\:", ":")).filter(|name| !name.is_empty())
+        let fields = nmcli_fields(line);
+        (fields.first()? == "yes")
+            .then(|| fields.get(1).cloned())
+            .flatten()
+            .filter(|ssid| !ssid.is_empty())
     })
+}
+
+/// One line of nmcli's terse output, split into fields. A `:` inside a field
+/// comes escaped as `\:`, and a backslash as `\\`.
+pub fn nmcli_fields(line: &str) -> Vec<String> {
+    let mut fields = vec![String::new()];
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        let c = match c {
+            '\\' => match chars.next() {
+                Some(next) => next,
+                None => break,
+            },
+            ':' => {
+                fields.push(String::new());
+                continue;
+            }
+            c => c,
+        };
+        if let Some(field) = fields.last_mut() {
+            field.push(c);
+        }
+    }
+    fields
 }
 
 fn bluetooth_on() -> bool {
@@ -627,10 +746,12 @@ fn wifi() -> Items {
 pub fn parse_nmcli(out: &str) -> Items {
     let mut seen: Vec<(String, i32, bool)> = Vec::new();
     for line in out.lines() {
-        let mut fields = line.splitn(3, ':');
-        let active = fields.next().unwrap_or("no") == "yes";
-        let signal: i32 = fields.next().unwrap_or("0").parse().unwrap_or(0);
-        let ssid = fields.next().unwrap_or("").trim().to_string();
+        let fields = nmcli_fields(line);
+        let field = |at: usize| fields.get(at).map(String::as_str).unwrap_or("");
+        let active = field(0) == "yes";
+        let signal: i32 = field(1).parse().unwrap_or(0);
+        // Not trimmed: a leading or trailing space is part of the name you join.
+        let ssid = field(2).to_string();
         if ssid.is_empty() {
             continue;
         }
@@ -764,24 +885,36 @@ fn levels(what: &str) -> Items {
 // --------------------------------------------------------- desktop entries
 
 fn desktop_entries() -> Items {
-    let mut dirs = vec![std::path::PathBuf::from("/usr/share/applications")];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join(".local/share/applications"));
-    }
+    let desktops: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .map(str::to_lowercase)
+        .collect();
+    let desktops: Vec<&str> = desktops.iter().map(String::as_str).collect();
+    // The first file with a name wins, so the user's copy overrides the
+    // system's, and a copy with Hidden=true hides it. That is the spec's way.
+    let mut seen = std::collections::HashSet::new();
     let mut out: Items = Vec::new();
-    for dir in dirs {
+    for dir in application_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let mut files: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for path in files {
             if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Some(id) = path.file_name().map(|n| n.to_os_string()) else {
+                continue;
+            };
+            if !seen.insert(id) {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if let Some(item) = parse_desktop_entry(&text) {
+            if let Some(item) = parse_entry(&text, &desktops, &pt35_common::apps::on_path) {
                 out.push(item);
             }
         }
@@ -791,14 +924,44 @@ fn desktop_entries() -> Items {
     out
 }
 
+/// Where .desktop files live, most important first.
+fn application_dirs() -> Vec<std::path::PathBuf> {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let data_home = var("XDG_DATA_HOME").or_else(|| var("HOME").map(|h| h + "/.local/share"));
+    let data_dirs = var("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for dir in data_home
+        .iter()
+        .map(String::as_str)
+        .chain(data_dirs.split(':'))
+    {
+        let dir = std::path::Path::new(dir).join("applications");
+        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// Pull `Name` and `Exec` out of a .desktop file, skipping hidden ones and
 /// stripping the field codes (`%U`, `%f`, …) that would confuse `sh -c`.
+#[cfg(test)]
 pub fn parse_desktop_entry(text: &str) -> Option<Item> {
+    parse_entry(text, &[], &|_| true)
+}
+
+/// `desktops` is `$XDG_CURRENT_DESKTOP`, lowercase, for OnlyShowIn and
+/// NotShowIn. `installed` answers TryExec.
+fn parse_entry(text: &str, desktops: &[&str], installed: &dyn Fn(&str) -> bool) -> Option<Item> {
     let mut name = None;
     let mut exec = None;
     let mut icon = None;
     let mut terminal = false;
     let mut in_main_section = false;
+    let shown_in = |list: &str| {
+        list.split(';')
+            .any(|d| !d.is_empty() && desktops.contains(&d.to_lowercase().as_str()))
+    };
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
@@ -808,25 +971,27 @@ pub fn parse_desktop_entry(text: &str) -> Option<Item> {
         if !in_main_section {
             continue;
         }
-        match line.split_once('=') {
-            Some(("Name", value)) => name = Some(value.trim().to_string()),
-            Some(("Exec", value)) => exec = Some(value.trim().to_string()),
-            Some(("Icon", value)) => icon = Some(value.trim().to_string()),
-            Some(("Terminal", value)) => terminal = value.trim().eq_ignore_ascii_case("true"),
-            Some(("NoDisplay", value)) | Some(("Hidden", value))
-                if value.trim().eq_ignore_ascii_case("true") =>
-            {
-                return None
-            }
-            Some(("Type", value)) if value.trim() != "Application" => return None,
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = unescape_desktop(value.trim());
+        match key.trim() {
+            "Name" => name = Some(value),
+            "Exec" => exec = Some(value),
+            "Icon" => icon = Some(value),
+            "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
+            "NoDisplay" | "Hidden" if value.eq_ignore_ascii_case("true") => return None,
+            "Type" if value != "Application" => return None,
+            "OnlyShowIn" if !shown_in(&value) => return None,
+            "NotShowIn" if shown_in(&value) => return None,
+            "TryExec" if !installed(&value) => return None,
             _ => {}
         }
     }
-    let exec = exec?
-        .split_whitespace()
-        .filter(|word| !(word.len() == 2 && word.starts_with('%')))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let exec = strip_field_codes(&exec?);
+    if exec.is_empty() {
+        return None;
+    }
     // `Terminal=true` means a text program, htop or vim: started bare it has
     // nowhere to draw and exits at once.
     let exec = if terminal {
@@ -853,6 +1018,61 @@ pub fn parse_desktop_entry(text: &str) -> Option<Item> {
         payload: exec,
         ..Item::default()
     })
+}
+
+/// The string escapes of a .desktop value: `\s`, `\n`, `\t`, `\r`, `\\`.
+/// Any other escape is left for the Exec line's own quoting.
+fn unescape_desktop(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// No files are handed over, so a word that carries a field code goes whole:
+/// `--file=%f` with no file is worse than no flag. `%%` is a plain `%`.
+fn strip_field_codes(exec: &str) -> String {
+    const CODES: &str = "fFuUdDnNickvm";
+    exec.split_whitespace()
+        .filter_map(|word| {
+            let mut out = String::new();
+            let mut chars = word.chars();
+            while let Some(c) = chars.next() {
+                if c != '%' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    Some('%') => out.push('%'),
+                    Some(code) if CODES.contains(code) => return None,
+                    Some(other) => {
+                        out.push('%');
+                        out.push(other);
+                    }
+                    None => out.push('%'),
+                }
+            }
+            Some(out)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ------------------------------------------------------------------ about
@@ -1010,7 +1230,7 @@ const CLOCKS: &[(&str, &str, &str)] = &[
 /// One row per choice, the current one marked. A picks it and the screen
 /// stays, so the change is seen on the rows themselves.
 fn appearance() -> Items {
-    let theme = pt35_common::load_theme().unwrap_or_default();
+    let theme = pt35_common::load_theme();
     let dark = theme.apps.color_scheme != pt35_common::theme::ColorScheme::Light;
     let background = theme.color.background.to_string();
     let mut out: Items = PALETTES
@@ -1120,11 +1340,18 @@ pub fn parse_pick(pick: &str) -> Option<(&str, &str, toml::Value)> {
     Some((section, key, value))
 }
 
+/// English, because the parsers read it: "Powered: yes", "enabled". UTF-8,
+/// because plain C makes nmcli turn "Café" into something you cannot join.
+/// Bounded, so a radio daemon that is not running costs a screen that says
+/// nothing rather than one stuck on "Reading..." for good.
 fn run(bin: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(bin).args(args).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    pt35_common::proc::output_within(
+        Command::new(bin)
+            .args(args)
+            .env("LC_ALL", "C.UTF-8")
+            .env_remove("LANGUAGE"),
+        std::time::Duration::from_secs(10),
+    )
 }
 
 #[cfg(test)]
@@ -1170,10 +1397,59 @@ mod provider_tests {
     }
 
     #[test]
-    fn the_wifi_name_comes_from_the_active_connection() {
-        let out = "Wired connection 1:802-3-ethernet\nCafe\\: 5G:802-11-wireless\nlo:loopback\n";
+    fn the_wifi_name_is_the_ssid_you_are_on() {
+        let out = "no:Neighbours\nyes:Cafe\\: 5G\nno:\n";
         assert_eq!(active_wifi(out).as_deref(), Some("Cafe: 5G"));
-        assert_eq!(active_wifi("lo:loopback\n"), None);
+        assert_eq!(active_wifi("no:Home\n"), None);
+    }
+
+    #[test]
+    fn nmcli_escapes_are_undone_and_names_are_not_trimmed() {
+        assert_eq!(nmcli_fields(r"yes:70:a\:b\\c"), ["yes", "70", r"a:b\c"]);
+        let items = parse_nmcli("no:60: Lobby \nno:50:Cafe\\: 5G\n");
+        assert_eq!(items[0].payload, " Lobby ");
+        assert_eq!(items[1].payload, "Cafe: 5G");
+    }
+
+    #[test]
+    fn a_terminal_is_known_by_the_terminal_and_by_what_it_runs() {
+        assert_eq!(programs_of("foot pt35-hello"), ["foot", "pt35-hello"]);
+        assert_eq!(
+            program_of("foot -a pt35-monitor htop").as_deref(),
+            Some("htop")
+        );
+        assert_eq!(
+            program_of("/usr/bin/vlc --started-from-file").as_deref(),
+            Some("vlc")
+        );
+    }
+
+    #[test]
+    fn field_codes_go_and_a_double_percent_stays() {
+        assert_eq!(strip_field_codes("app %U"), "app");
+        assert_eq!(strip_field_codes("app --file=%f --x"), "app --x");
+        assert_eq!(strip_field_codes("printf 100%%"), "printf 100%");
+    }
+
+    #[test]
+    fn desktop_values_are_unescaped_and_keys_may_have_spaces() {
+        let text = "[Desktop Entry]\nType = Application\nName = Big\\sApp\nExec = big\n";
+        let item = parse_desktop_entry(text).expect("an application");
+        assert_eq!(item.label, "Big App");
+        assert_eq!(item.payload, "big");
+    }
+
+    #[test]
+    fn entries_for_other_desktops_or_missing_programs_are_hidden() {
+        let entry =
+            |extra: &str| format!("[Desktop Entry]\nType=Application\nName=x\nExec=x\n{extra}");
+        let yes = |_: &str| true;
+        let no = |_: &str| false;
+        assert!(parse_entry(&entry("OnlyShowIn=GNOME;"), &["sway"], &yes).is_none());
+        assert!(parse_entry(&entry("OnlyShowIn=GNOME;sway;"), &["sway"], &yes).is_some());
+        assert!(parse_entry(&entry("NotShowIn=sway;"), &["sway"], &yes).is_none());
+        assert!(parse_entry(&entry("TryExec=x"), &["sway"], &no).is_none());
+        assert!(parse_entry(&entry("TryExec=x"), &["sway"], &yes).is_some());
     }
 
     #[test]

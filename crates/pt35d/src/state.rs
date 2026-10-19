@@ -46,10 +46,18 @@ pub struct Session {
     wake_proc: Option<Child>,
     /// The backlight through the keyboard, when its firmware answers.
     serial_backlight: Option<crate::backlight::SerialBacklight>,
-    /// A background look for the pt35 firmware, while it has not answered:
-    /// the keyboard reboots after a flash and is replugged now and then.
-    backlight_probe: Option<std::sync::mpsc::Receiver<Option<crate::backlight::SerialBacklight>>>,
+    /// A background look for the pt35 firmware: the keyboard reboots after a
+    /// flash and is replugged now and then.
+    backlight_probe: Option<std::sync::mpsc::Receiver<Probe>>,
     last_probe: std::time::Instant,
+    /// The console the last probe asked, and how many times it went unanswered.
+    probed: Option<crate::backlight::ConsoleId>,
+    unanswered: u32,
+    /// When `pt35-kbd` last changed the firmware, as its stamp file says.
+    flashed: Option<std::time::SystemTime>,
+    /// Bumped on every brightness change, so a probe that read the level
+    /// before one cannot put the old level back after it.
+    brightness_changes: u64,
     /// When the focused window was last captured for the switcher.
     last_preview: std::time::Instant,
     /// True while the menu on screen is standing in for a desktop. It gets out
@@ -62,12 +70,20 @@ pub struct Session {
     /// Without it the menu reopens on top of every app you launch: the menu
     /// exits, the window has not mapped, the desktop reads as empty.
     launch_pending: Option<std::time::Instant>,
+    /// Windows asked to close, and when.
+    closing: Vec<(i64, std::time::Instant)>,
+    /// The `assign` and `for_window` rules sway holds.
+    sent_rules: Vec<String>,
 }
 
 /// How long a launch suppresses the empty-desktop menu. Long enough for a slow
 /// GTK app on a Pi 4, short enough that a failed launch does not strand you on
 /// a blank screen.
 const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a killed window stays out of the list while its client goes. One
+/// still there after this is asking about unsaved work, and comes back.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The Start button, by the keysym `KEY_PAUSE` produces. Bound by the daemon
 /// rather than the sway config, because it changes hands when the menu opens.
@@ -111,12 +127,22 @@ impl Session {
             lock_proc: None,
             wake_proc: None,
             last_preview: std::time::Instant::now(),
-            serial_backlight: crate::backlight::SerialBacklight::find(),
+            // Asked off the startup path, by the first poll: a stock keyboard
+            // takes 0.4s to say nothing.
+            serial_backlight: None,
             backlight_probe: None,
-            last_probe: std::time::Instant::now(),
+            last_probe: std::time::Instant::now()
+                .checked_sub(PROBE_EVERY)
+                .unwrap_or_else(std::time::Instant::now),
+            probed: None,
+            unanswered: 0,
+            flashed: flash_stamp(),
+            brightness_changes: 0,
             menu_is_desktop: false,
             pending: Vec::new(),
             launch_pending: Some(std::time::Instant::now()),
+            closing: Vec::new(),
+            sent_rules: Vec::new(),
         };
         if let Err(e) = session.menu.validate() {
             log::error!("menu.toml is inconsistent ({e}); the menu key will show an error page");
@@ -172,42 +198,110 @@ impl Session {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
-        if let Ok(mut child) = spawned {
-            std::thread::spawn(move || child.wait());
+        if let Ok(child) = spawned {
+            reap(child);
         }
     }
 
-    /// Look for the pt35 firmware off the poll thread, every PROBE_EVERY until
-    /// it answers; a stock keyboard costs a 0.4s read each time. When it
-    /// does answer, Start and Select move to its keys.
+    /// Ask the keyboard for its firmware, off the poll thread.
+    ///
+    /// The pt35 firmware is asked every PROBE_EVERY: that keeps the level right
+    /// after Fn - and =, and notices `pt35-kbd restore`. Stock firmware never
+    /// reads what we send, and what piles up in it can keep `pt35-kbd` from
+    /// getting through, so it is asked only a few times per keyboard: when the
+    /// console appears, and when `pt35-kbd` says it changed the firmware.
     fn probe_firmware(&mut self) {
-        if self.serial_backlight.is_some() {
-            return;
-        }
         if let Some(rx) = &self.backlight_probe {
             match rx.try_recv() {
-                Ok(found) => {
+                Ok(probe) => {
                     self.backlight_probe = None;
-                    if found.is_some() {
-                        self.serial_backlight = found;
-                        log::info!("pt35 keyboard firmware found");
-                        if self.menu_proc.is_none() {
-                            self.grab_start();
-                        }
-                    }
+                    self.take_probe(probe);
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.backlight_probe = None,
             }
+        }
+        if self.last_probe.elapsed() < PROBE_EVERY {
             return;
         }
-        if self.last_probe.elapsed() >= PROBE_EVERY {
-            self.last_probe = std::time::Instant::now();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(crate::backlight::SerialBacklight::find());
-            });
-            self.backlight_probe = Some(rx);
+        let console = crate::backlight::ConsoleId::now();
+        let flashed = flash_stamp();
+        let replugged = console != self.probed;
+        if replugged || flashed != self.flashed {
+            self.unanswered = 0;
+            self.flashed = flashed;
+        }
+        let due = match (&self.serial_backlight, &console) {
+            (_, None) => self.serial_backlight.is_some() || self.probed.is_some(),
+            (Some(_), Some(_)) => true,
+            (None, Some(_)) => self.unanswered < STOCK_PROBES,
+        };
+        if !due {
+            return;
+        }
+        self.last_probe = std::time::Instant::now();
+        let known = self.serial_backlight.clone();
+        let changes = self.brightness_changes;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let probe = match known {
+                // A replug can bring it back as another ttyACM: look it up anew.
+                Some(mut backlight) if !replugged => {
+                    let answer = backlight.read();
+                    Probe {
+                        console,
+                        backlight: Some(backlight),
+                        answer,
+                        changes,
+                    }
+                }
+                _ => {
+                    let (backlight, answer) = crate::backlight::SerialBacklight::find();
+                    Probe {
+                        console,
+                        backlight,
+                        answer,
+                        changes,
+                    }
+                }
+            };
+            let _ = tx.send(probe);
+        });
+        self.backlight_probe = Some(rx);
+    }
+
+    fn take_probe(&mut self, probe: Probe) {
+        use crate::backlight::Answer;
+        let was = self.serial_backlight.is_some();
+        self.probed = probe.console;
+        match probe.answer {
+            Answer::Level(_) => {
+                self.unanswered = 0;
+                // A change landed while the probe was out: its level is older.
+                let stale = probe.changes != self.brightness_changes;
+                if !(stale && self.serial_backlight.is_some()) {
+                    self.serial_backlight = probe.backlight;
+                }
+            }
+            Answer::Busy => {}
+            Answer::Silent => {
+                self.unanswered += 1;
+                if self.probed.is_none() || self.unanswered >= GONE_AFTER {
+                    self.serial_backlight = None;
+                }
+            }
+        }
+        let now = self.serial_backlight.is_some();
+        if was != now {
+            log::info!(
+                "pt35 keyboard firmware {}",
+                if now { "found" } else { "gone" }
+            );
+            // Start and Select move to the other firmware's keys. With the menu
+            // up they are the menu's, and its close binds them again.
+            if self.menu_proc.is_none() {
+                self.grab_start();
+            }
         }
     }
 
@@ -241,7 +335,7 @@ impl Session {
                 .args(["-k", key.keysym()])
                 .stdin(Stdio::null())
                 .spawn()
-                .map(|mut child| std::thread::spawn(move || child.wait()));
+                .map(reap);
         }
     }
 
@@ -302,9 +396,45 @@ impl Session {
             })
             .collect();
         for rule in rules {
-            if let Err(e) = self.sway_command(&rule) {
-                log::warn!("{rule}: {e}");
-            }
+            self.send_rule(rule);
+        }
+    }
+
+    /// Send an `assign` or `for_window` once. sway has no way to take one back,
+    /// so a rule sent again on every reload or launch only piles up.
+    fn send_rule(&mut self, rule: String) {
+        if self.sent_rules.contains(&rule) {
+            return;
+        }
+        match self.sway_command(&rule) {
+            Ok(()) => self.sent_rules.push(rule),
+            Err(e) => log::warn!("{rule}: {e}"),
+        }
+    }
+
+    /// sway has re-read its config, which drops everything pt35d set at run
+    /// time: the bindings, the assigns, the wallpaper, touch and the scale. Put
+    /// it all back. `bound` describes nothing sway holds any more.
+    pub fn after_sway_reload(&mut self) {
+        log::info!("sway reloaded its config; binding again");
+        self.bound.clear();
+        self.sent_rules.clear();
+        self.apply_assignments();
+        self.apply_wallpaper();
+        if !self.status.touch_enabled {
+            let _ = self.sway_command("input type:touch events disabled");
+        }
+        if self.status.scale != 1.0 {
+            let _ = self.sway_command(&format!("output * scale {}", self.status.scale));
+        }
+        let result = if self.menu_proc.is_some() {
+            self.set_menu_mode(self.status.input_mode)
+        } else {
+            self.grab_start();
+            self.set_mode(self.status.input_mode)
+        };
+        if let Err(e) = result {
+            log::warn!("input mode after a reload: {e}");
         }
     }
 
@@ -358,11 +488,12 @@ impl Session {
     pub fn refresh(&mut self) {
         self.status.battery_percent = self.hw.battery_percent();
         self.status.charging = self.hw.charging();
+        // First, so a keyboard just found brings its level in the same status.
+        self.probe_firmware();
         self.status.brightness_percent = self
             .hw
             .brightness_percent()
             .or_else(|| self.serial_backlight.as_ref().and_then(|b| b.level));
-        self.probe_firmware();
         self.status.pt35_firmware = self.serial_backlight.is_some();
         let (volume, muted) = audio::state(self.audio);
         self.status.volume_percent = volume;
@@ -415,18 +546,32 @@ impl Session {
     /// Deliberately free of hardware reads: an event can arrive many times a
     /// second and `audio::state` spawns a subprocess.
     pub fn refresh_windows(&mut self) {
-        if let Some(windows) = self.window_list() {
-            self.status.windows = windows;
+        let tree = self.tree();
+        if let Some(tree) = &tree {
+            self.status.windows = self.windows_in(tree);
         }
         self.spread_windows();
-        match self.sway().and_then(|s| s.focus()) {
-            Ok((workspace, app)) => {
+        match self.sway().and_then(|s| s.focused_workspace()) {
+            Ok(workspace) => {
                 self.status.workspace = workspace;
-                self.status.app = app;
+                if let Some(tree) = &tree {
+                    self.status.app = pt35_common::sway::focused_window_name(tree);
+                }
             }
             Err(_) => self.sway = None,
         }
         self.open_menu_on_empty_desktop();
+    }
+
+    /// The sway tree, or `None` when sway did not answer.
+    fn tree(&mut self) -> Option<serde_json::Value> {
+        match self.sway_query(pt35_common::sway::MessageType::GetTree) {
+            Ok(json) => serde_json::from_str(&json).ok(),
+            Err(e) => {
+                log::debug!("window list: {e}");
+                None
+            }
+        }
     }
 
     /// Open windows, for the dock in the bar.
@@ -434,17 +579,21 @@ impl Session {
     /// `None` means sway did not answer. The caller keeps whatever it had,
     /// rather than blanking the dock over one dropped reply.
     fn window_list(&mut self) -> Option<Vec<pt35_common::ipc::WindowInfo>> {
-        let json = match self.sway_query(pt35_common::sway::MessageType::GetTree) {
-            Ok(json) => json,
-            Err(e) => {
-                log::debug!("window list: {e}");
-                return None;
-            }
-        };
-        let tree = serde_json::from_str::<serde_json::Value>(&json).ok()?;
-        let apps = self.apps.clone();
-        let list = pt35_common::sway::windows(&tree)
+        let tree = self.tree()?;
+        Some(self.windows_in(&tree))
+    }
+
+    fn windows_in(&mut self, tree: &serde_json::Value) -> Vec<pt35_common::ipc::WindowInfo> {
+        let found = pt35_common::sway::windows(tree);
+        // A killed window stays in the tree until its client lets go of it, which
+        // for a browser is a second or more. Hidden until then, or until it has
+        // clearly refused to go.
+        self.closing
+            .retain(|(id, at)| at.elapsed() < CLOSE_GRACE && found.iter().any(|w| w.id == *id));
+        let apps = &self.apps;
+        found
             .into_iter()
+            .filter(|w| !self.closing.iter().any(|(id, _)| *id == w.id))
             .map(|w| pt35_common::ipc::WindowInfo {
                 id: w.id,
                 workspace: w.workspace,
@@ -465,8 +614,7 @@ impl Session {
                 focused: w.focused,
                 floating: w.floating,
             })
-            .collect();
-        Some(list)
+            .collect()
     }
 
     /// Give every tiled window its own workspace. A second window on one
@@ -555,9 +703,12 @@ impl Session {
             }
 
             Request::Brightness { change } => {
-                // Plugged in or reflashed since startup: look again.
-                if self.hw.backlight.is_none() && self.serial_backlight.is_none() {
-                    self.serial_backlight = crate::backlight::SerialBacklight::find();
+                // A step is from where the panel is, and Fn - and = move it
+                // without telling us.
+                if matches!(change, Delta::Relative(_)) && self.hw.backlight.is_none() {
+                    if let Some(backlight) = self.serial_backlight.as_mut() {
+                        backlight.read();
+                    }
                 }
                 let current = self
                     .hw
@@ -581,6 +732,7 @@ impl Session {
                     bail!("the keyboard did not take the brightness");
                 };
                 self.status.brightness_percent = Some(level);
+                self.brightness_changes += 1;
                 self.notify(format!("Brightness {level}%"), 0);
                 Ok(Response::Ok)
             }
@@ -710,6 +862,7 @@ impl Session {
                             if let Err(e) = self.sway_command(&format!("[con_id={id}] kill")) {
                                 log::warn!("closing {id}: {e}");
                             }
+                            self.closing.push((id, std::time::Instant::now()));
                         }
                         // Drop them all at once. Anything that refuses to go
                         // comes back on its own `window::close` never arriving.
@@ -730,13 +883,12 @@ impl Session {
 
             Request::Screenshot => {
                 let path = screenshot_path();
-                let status = Command::new("grim")
-                    .arg(&path)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                match status {
-                    Ok(s) if s.success() => {
+                let taken = pt35_common::proc::output_within(
+                    Command::new("grim").arg(&path),
+                    std::time::Duration::from_secs(5),
+                );
+                match taken {
+                    Some(_) => {
                         hooks::fire("screenshot", &[("PT35_SCREENSHOT", path.clone())]);
                         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                         self.notify(format!("Saved {name}"), 0);
@@ -845,7 +997,15 @@ impl Session {
             if let Some(page) = &page {
                 cmd.arg("--page").arg(page);
             }
-            self.menu_proc = Some(cmd.stdin(Stdio::null()).spawn()?);
+            match cmd.stdin(Stdio::null()).spawn() {
+                Ok(child) => self.menu_proc = Some(child),
+                Err(e) => {
+                    // No menu took the keys, so they must not stay handed over.
+                    self.restore_mode();
+                    self.sync_menu_open();
+                    return Err(anyhow::anyhow!("pt35-menu: {e}"));
+                }
+            }
             // Until the menu says otherwise: a second press can beat its first
             // frame.
             self.menu_page = page;
@@ -884,7 +1044,11 @@ impl Session {
             .map(|b| b.unbind())
             .collect();
         if !gone.is_empty() {
-            self.sway_command(&gone.join(", "))?;
+            // sway runs every command in a batch even when one fails, and the one
+            // that fails is a binding it no longer has. Either way they are gone.
+            if let Err(e) = self.sway_command(&gone.join(", ")) {
+                log::debug!("unbinding: {e}");
+            }
             self.bound.retain(|b| wanted.contains(b));
         }
         // Record each bind as it lands, not all of them at the end: a failure
@@ -920,15 +1084,19 @@ impl Session {
     /// `kill` is a request, not a deletion: sway sends `xdg_toplevel.close` and
     /// answers success straight away, while the container lives until the client
     /// destroys its surface. Re-reading the tree here would return the window we
-    /// just killed, which is the whole bug. So drop it locally and let the
-    /// `window::close` event put the truth back. An app that refuses to close,
-    /// say to ask about unsaved work, reappears, which is correct.
+    /// just killed, which is the whole bug. So drop it locally, and keep it out
+    /// of tree reads for CLOSE_GRACE. An app that refuses to close, say to ask
+    /// about unsaved work, reappears after that, which is correct.
     fn close_window(&mut self, id: i64) -> Result<()> {
-        // Closing leaves you on an empty workspace otherwise, because every app
-        // owns one.
-        let next = next_window(&self.status.windows, self.status.workspace, true);
+        // Closing the window you are in leaves you on an empty workspace
+        // otherwise, because every app owns one. Closing one behind it from the
+        // switcher must leave you where you are.
+        let current = self.current_window().map(|w| w.id) == Some(id);
+        let next =
+            next_window(&self.status.windows, self.status.workspace, true).filter(|_| current);
         self.sway_command(&format!("[con_id={id}] kill"))?;
         self.status.windows.retain(|w| w.id != id);
+        self.closing.push((id, std::time::Instant::now()));
         if let Some(next) = next.filter(|next| *next != id) {
             let _ = self.sway_command(&format!("[con_id={next}] focus"));
             for window in &mut self.status.windows {
@@ -1033,9 +1201,9 @@ impl Session {
             return Ok(());
         }
         let commands: Vec<String> = self.bound.iter().map(|b| b.unbind()).collect();
-        self.sway_command(&commands.join(", "))?;
+        let result = self.sway_command(&commands.join(", "));
         self.bound.clear();
-        Ok(())
+        result
     }
 
     fn restore_mode(&mut self) {
@@ -1145,7 +1313,7 @@ impl Session {
         }
         if app.fullscreen {
             for criteria in app.sway_criteria_list() {
-                let _ = self.sway_command(&format!("for_window {criteria} fullscreen enable"));
+                self.send_rule(format!("for_window {criteria} fullscreen enable"));
             }
         }
 
@@ -1157,7 +1325,7 @@ impl Session {
         for (key, value) in &app.env {
             cmd.env(key, value);
         }
-        cmd.spawn()?;
+        reap(cmd.spawn()?);
         // The window has not mapped yet, so the desktop still reads as empty.
         // Hold the menu off until it appears.
         self.launch_pending = Some(std::time::Instant::now());
@@ -1200,11 +1368,13 @@ impl Session {
             }
         }
 
-        Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .stdin(Stdio::null())
-            .spawn()?;
+        reap(
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdin(Stdio::null())
+                .spawn()?,
+        );
         self.launch_pending = Some(std::time::Instant::now());
         crate::recents::record(&format!("exec:{command}"));
         hooks::fire("launch", &[("PT35_APP", command.to_string())]);
@@ -1223,11 +1393,11 @@ impl Session {
             CpuProfile::Balanced => "balanced",
             CpuProfile::Performance => "performance",
         };
-        let ok = Command::new("sudo")
-            .args(["-n", "/usr/lib/pt35/pt35-cpu-profile", name])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let ok = pt35_common::proc::output_within(
+            Command::new("sudo").args(["-n", "/usr/lib/pt35/pt35-cpu-profile", name]),
+            std::time::Duration::from_secs(5),
+        )
+        .is_some();
         if !ok {
             bail!("cannot change the CPU profile (no cpufreq write access)");
         }
@@ -1260,7 +1430,7 @@ impl Session {
             // A second press closes it. Reopening it would only flash. With
             // nothing open, closing means the top screen, as Start does.
             PowerAction::Menu if self.menu_page.as_deref() == Some("power") => {
-                if self.status.windows.is_empty() {
+                if self.status.workspace_empty() {
                     self.toggle_menu(Toggle::On, None)
                 } else {
                     self.toggle_menu(Toggle::Off, None)
@@ -1539,8 +1709,40 @@ fn apply_cursor(pointer: &pt35_common::theme::Pointer) {
     });
 }
 
-/// How often to look for the pt35 keyboard firmware until it answers.
+/// How often the keyboard is asked: the pt35 firmware for as long as it answers,
+/// a stock one up to STOCK_PROBES times.
 const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How many times a stock keyboard is asked before it is left alone.
+const STOCK_PROBES: u32 = 3;
+
+/// Missed answers in a row before the pt35 firmware counts as gone.
+const GONE_AFTER: u32 = 3;
+
+/// Touched by `pt35-kbd` when it changes the firmware. A reload of code.py does
+/// not replug the keyboard, so nothing else would say so.
+const FLASH_STAMP: &str = "/run/pt35-kbd.flashed";
+
+/// Wait for a child on a thread of its own. Nothing else would, and every app
+/// started from the shell would stay a zombie until pt35d exits.
+pub fn reap(mut child: Child) {
+    std::thread::spawn(move || child.wait());
+}
+
+fn flash_stamp() -> Option<std::time::SystemTime> {
+    std::fs::metadata(FLASH_STAMP)
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+/// What a background look at the keyboard found.
+struct Probe {
+    console: Option<crate::backlight::ConsoleId>,
+    backlight: Option<crate::backlight::SerialBacklight>,
+    answer: crate::backlight::Answer,
+    /// `Session::brightness_changes` when the probe set out.
+    changes: u64,
+}
 
 /// How often the window in front is captured while you use it.
 const PREVIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
@@ -1579,20 +1781,11 @@ fn prune_previews(windows: &[pt35_common::ipc::WindowInfo]) {
 }
 
 fn load_theme_or_default() -> pt35_common::theme::Theme {
-    pt35_common::load_theme().unwrap_or_else(|e| {
-        log::error!("theme: {e}; falling back to built-in defaults");
-        Default::default()
-    })
+    pt35_common::load_theme()
 }
 
 fn load_or_default<T: serde::de::DeserializeOwned + Default>(relative: &str) -> T {
-    match pt35_common::load_config::<T>(relative) {
-        Ok(value) => value,
-        Err(e) => {
-            log::error!("{relative}: {e}; falling back to built-in defaults");
-            T::default()
-        }
-    }
+    pt35_common::load_config::<T>(relative)
 }
 
 #[cfg(test)]

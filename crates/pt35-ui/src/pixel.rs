@@ -51,7 +51,8 @@ pub fn parse_ppm(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         return None;
     }
     let (w, h): (u32, u32) = (fields[1].parse().ok()?, fields[2].parse().ok()?);
-    let pixels = data.get(at..at + (w * h * 3) as usize)?;
+    let len = (w as usize).checked_mul(h as usize)?.checked_mul(3)?;
+    let pixels = data.get(at..at.checked_add(len)?)?;
     Some((w, h, pixels.to_vec()))
 }
 

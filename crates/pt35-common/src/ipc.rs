@@ -364,9 +364,10 @@ pub struct Status {
     /// keeps tapping things.
     #[serde(default = "yes")]
     pub touch_enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub input_mode: InputMode,
     pub scale: f32,
+    #[serde(default, deserialize_with = "lenient")]
     pub cpu_profile: Option<CpuProfile>,
     /// Open windows, for the dock in the bar.
     #[serde(default)]
@@ -402,6 +403,18 @@ impl Status {
 
 fn yes() -> bool {
     true
+}
+
+/// A value an older reader does not know, say a mode added since, reads as the
+/// default. Failing it would lose the whole Status, and a menu with no Status
+/// takes the desktop for gone.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// One entry in the dock.
@@ -494,6 +507,22 @@ mod tests {
         assert_eq!("42".parse::<Delta>().unwrap(), Delta::Absolute(42));
         assert_eq!("mute".parse::<Delta>().unwrap(), Delta::Mute);
         assert!("loud".parse::<Delta>().is_err());
+    }
+
+    #[test]
+    fn a_mode_this_reader_does_not_know_does_not_lose_the_status() {
+        let mut value = serde_json::to_value(Status {
+            workspace: 3,
+            scale: 1.0,
+            ..Status::default()
+        })
+        .unwrap();
+        value["input_mode"] = "gamepad".into();
+        value["cpu_profile"] = "turbo".into();
+        let status: Status = serde_json::from_value(value).unwrap();
+        assert_eq!(status.workspace, 3);
+        assert_eq!(status.input_mode, InputMode::default());
+        assert_eq!(status.cpu_profile, None);
     }
 
     #[test]

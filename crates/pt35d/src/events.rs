@@ -9,7 +9,7 @@ use anyhow::Result;
 use pt35_common::ipc::Event;
 use pt35_common::sway::Sway;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::server::Subscribers;
 use crate::state::Session;
@@ -36,12 +36,12 @@ const INTERESTING: &[&str] = &[
     "fullscreen_mode",
     "init",
     "empty",
+    "reload",
 ];
 
 pub fn run(session: Arc<Mutex<Session>>, subscribers: Arc<Subscribers>) {
-    let mut last = Instant::now() - COALESCE;
     loop {
-        if let Err(e) = stream(&session, &subscribers, &mut last) {
+        if let Err(e) = stream(&session, &subscribers) {
             log::debug!("sway event stream ended: {e}");
         }
         // sway going away is the session ending; the poll thread notices and
@@ -50,39 +50,65 @@ pub fn run(session: Arc<Mutex<Session>>, subscribers: Arc<Subscribers>) {
     }
 }
 
-fn stream(
-    session: &Arc<Mutex<Session>>,
-    subscribers: &Arc<Subscribers>,
-    last: &mut Instant,
-) -> Result<()> {
+fn stream(session: &Arc<Mutex<Session>>, subscribers: &Arc<Subscribers>) -> Result<()> {
     let mut sway = Sway::connect_untimed()?;
     sway.subscribe(EVENTS)?;
     log::info!("subscribed to sway {EVENTS:?} events");
-    loop {
-        let (_, body) = sway.next_event()?;
-        if !worth_refreshing(&body) {
-            continue;
-        }
-        // Wait out the rest of the window rather than dropping the event. Two
-        // windows closing 10ms apart must both leave the dock, and the second
-        // event is the only notice of it. The sleep is outside the lock.
-        let since = last.elapsed();
-        if since < COALESCE {
-            std::thread::sleep(COALESCE - since);
-        }
-        *last = Instant::now();
-        let (status, notes) = {
-            let mut session = session.lock().expect("session");
-            session.refresh_windows();
-            (session.status.clone(), session.take_notifications())
-        };
-        if !subscribers.is_empty() {
-            subscribers.broadcast(&Event::Status(status));
-            for note in &notes {
-                subscribers.broadcast(note);
+    // A thread of its own does the reading, so this one can wait out a burst and
+    // take everything in it at once.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok((_, body)) = sway.next_event() {
+            if tx.send(body).is_err() {
+                break;
             }
         }
+    });
+    loop {
+        let first = rx.recv()?;
+        let mut news = News::default();
+        news.add(&first);
+        if news.is_none() {
+            continue;
+        }
+        std::thread::sleep(COALESCE);
+        for body in rx.try_iter() {
+            news.add(&body);
+        }
+        let mut session = session.lock().expect("session");
+        if news.reload {
+            session.after_sway_reload();
+        }
+        session.refresh_windows();
+        // Under the lock, so a status read after this one cannot go out before it.
+        subscribers.broadcast(&Event::Status(session.status.clone()));
+        for note in &session.take_notifications() {
+            subscribers.broadcast(note);
+        }
     }
+}
+
+/// What a burst of events asks for.
+#[derive(Default)]
+struct News {
+    refresh: bool,
+    reload: bool,
+}
+
+impl News {
+    fn add(&mut self, body: &str) {
+        self.refresh |= worth_refreshing(body);
+        self.reload |= is_reload(body);
+    }
+
+    fn is_none(&self) -> bool {
+        !self.refresh && !self.reload
+    }
+}
+
+fn is_reload(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .is_ok_and(|value| value["change"].as_str() == Some("reload"))
 }
 
 /// Every sway event carries a `change` saying what happened.
@@ -113,6 +139,18 @@ mod tests {
         assert!(!worth_refreshing(r#"{"change":"title"}"#));
         assert!(!worth_refreshing(r#"{"change":"mark"}"#));
         assert!(!worth_refreshing(r#"{"change":"urgent"}"#));
+    }
+
+    #[test]
+    fn a_config_reload_is_told_apart() {
+        let reload = r#"{"change":"reload","old":null,"current":null}"#;
+        assert!(is_reload(reload));
+        assert!(!is_reload(r#"{"change":"focus"}"#));
+        let mut news = News::default();
+        news.add(r#"{"change":"title"}"#);
+        assert!(news.is_none());
+        news.add(reload);
+        assert!(news.reload);
     }
 
     #[test]

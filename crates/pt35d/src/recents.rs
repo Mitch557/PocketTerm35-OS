@@ -3,7 +3,6 @@
 //! `apps.toml` is a `BTreeMap`, so the launcher was sorted by app id, which is
 //! an order nobody chose. The things you opened last go on top instead.
 
-use std::io::Write;
 use std::path::PathBuf;
 
 /// How many entries are kept. `[menu] recents` picks how many the launcher shows.
@@ -27,16 +26,8 @@ pub fn record(id: &str) {
     list.retain(|seen| seen != id);
     list.insert(0, id.to_string());
     list.truncate(KEEP);
-    let path = path();
-    if let Some(dir) = path.parent() {
-        // Losing the recents list is not worth failing a launch over.
-        if std::fs::create_dir_all(dir).is_err() {
-            return;
-        }
-    }
-    if let Ok(mut file) = std::fs::File::create(&path) {
-        let _ = writeln!(file, "{}", list.join("\n"));
-    }
+    // Losing the recents list is not worth failing a launch over.
+    let _ = pt35_common::write_atomic(&path(), (list.join("\n") + "\n").as_bytes());
 }
 
 fn parse(text: &str) -> Vec<String> {

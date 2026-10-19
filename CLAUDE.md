@@ -40,6 +40,12 @@ Captured from the board, not guessed. See `docs/hardware-facts.md`.
   pt35 firmware is on (`Status::pt35_firmware`): letters stop being buttons and
   the launcher searches as you type. Battery has no such path. Never show a
   gauge or a row that can only read `--`.
+- Nothing reads the keyboard's console between requests, so the firmware
+  prints only the `PT35 B=` answer: a full buffer blocks `print` and the scan
+  loop with it. Stock firmware never reads its console either, so `pt35d` asks
+  it three times per plug-in, and again when `pt35-kbd` touches
+  `/run/pt35-kbd.flashed`. The pt35 firmware is asked every 10s, which keeps
+  the level right after Fn `-` / `=`. Every request is non-blocking and bounded.
 - Network: `eth0` (the Pi's RJ45) and `wlan0`, both NetworkManager. A cable
   with link wins: `Status::ethernet` is set, the bar shows the wired icon, and
   the quick panel and Network screen gain an Ethernet row. No cable, no row.
@@ -79,11 +85,13 @@ L and R are sway bindings on the firmware's keysyms (`pt35d`'s `modes.rs`),
 dropped while the menu is open because a sway binding beats any surface and the
 menu reads the same keys. Never take a binding off a key that may be held: sway 1.10
 segfaults when it runs the freed binding on release or on key repeat. So
-`bind_mode` changes only the bindings that differ, and Start and Select are
-`--no-repeat`. The menu then does the same job itself: R switches
-mode, L closes the card under the cursor on the switcher and nothing elsewhere,
-because the window behind the menu is out of sight. Start and Select are in the
-sway config, so no mode can lose them.
+`bind_mode` changes only the bindings that differ, and every binding the menu
+takes off is `--no-repeat`: Start, Select, L, R and Buttons mode's A, B, X and
+Y. So holding A does not repeat Enter. The menu then does the
+same job itself: R switches mode, L closes the card under the cursor on the
+switcher and nothing elsewhere, because the window behind the menu is out of
+sight. `pt35d` binds Start and Select outside the modes, so no mode can lose
+them.
 
 The menu is modal, for a stock unit where the letters are the buttons: nav mode
 (A opens, B back, X search, Y home) and filter mode. The D-pad sideways changes
@@ -119,8 +127,14 @@ coalesced at 50ms: `window::title` fires on every prompt redraw. The 2 second
 poll is for hardware only.
 
 `kill` is a request, not a deletion: sway answers it before the client has gone.
-So closing drops the window from the list locally and lets the `window::close`
-event confirm it. An app that refuses to close reappears, which is correct.
+So closing drops the window from the list locally, and tree reads leave it out
+until it is gone or 3 seconds pass (`CLOSE_GRACE`). An app that refuses to close
+reappears then, which is correct.
+
+A sway `reload` drops every binding, assign and setting `pt35d` made at run
+time. `pt35d` sees the reload event and makes them again
+(`Session::after_sway_reload`). `pt35d` and `pt35-bar` run in respawn loops in
+the sway config.
 
 With nothing open on the workspace in front, the menu is the desktop, like a
 phone's home screen (`Status::workspace_empty`): it opens on its own and refuses

@@ -71,7 +71,7 @@ impl Canvas {
     /// canvas. For window previews: a few thousand pixels, cheap every frame.
     #[allow(clippy::too_many_arguments)]
     pub fn blit_rgb(&mut self, x: i32, y: i32, w: u32, h: u32, rgb: &[u8], src_w: u32, src_h: u32) {
-        if src_w == 0 || src_h == 0 || rgb.len() < (src_w * src_h * 3) as usize {
+        if src_w == 0 || src_h == 0 || (rgb.len() as u64) < src_w as u64 * src_h as u64 * 3 {
             return;
         }
         for row in 0..h as i32 {

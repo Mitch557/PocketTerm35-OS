@@ -339,12 +339,15 @@ impl Model {
         items: &[crate::providers::Item],
     ) -> ListState {
         let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
-        // A search also finds an app by its id or command: "yazi" finds Files.
+        // A search also finds an app by its id or program: "yazi" finds Files.
         // Without the `app:` / `exec:` in front: "ap" must not match every
         // profiled app before the one whose name holds it.
         let keywords: Vec<String> = items
             .iter()
             .map(|i| {
+                if !i.search.is_empty() {
+                    return i.search.clone();
+                }
                 let p = i.payload.as_str();
                 p.split_once(':').map_or(p, |(_, rest)| rest).to_string()
             })
@@ -480,6 +483,14 @@ impl Model {
         )
     }
 
+    /// Every row of the dynamic screen on top.
+    pub fn dynamic_items(&self) -> Option<&[crate::providers::Item]> {
+        match &self.screen().source {
+            Source::Dynamic { items, .. } => Some(items),
+            _ => None,
+        }
+    }
+
     /// Payload of the row under the cursor on a dynamic screen.
     pub fn selected_payload(&self) -> Option<&str> {
         let Source::Dynamic { items, .. } = &self.screen().source else {
@@ -518,9 +529,14 @@ impl Model {
             return;
         };
         let mut list = self.list_for(builtin, crate::providers::screen(builtin).layout, &items);
+        // The cursor stays on the same thing, not the same place: a window
+        // closing before it would slide the next one under it, and L would close
+        // that. A search being typed stays too.
+        let selected = self.selected_payload().map(str::to_string);
         let screen = self.screen_mut();
-        if screen.list.mode() == pt35_ui::keys::Mode::Nav {
-            list.keep_position(&screen.list);
+        list.carry_from(&screen.list);
+        if let Some(at) = selected.and_then(|p| items.iter().position(|i| i.payload == p)) {
+            list.select_item(at);
         }
         screen.list = list;
         screen.source = Source::Dynamic { builtin, items };
@@ -555,6 +571,14 @@ impl Model {
     }
 
     pub fn handle(&mut self, key: &Key) -> Step {
+        if self.is_confirm()
+            && matches!(
+                pt35_ui::keys::navigate(key, self.screen().list.mode()),
+                pt35_ui::keys::Navigation::Select(_) | pt35_ui::keys::Navigation::StartFilter
+            )
+        {
+            return Step::Nothing;
+        }
         // X on the window picker is close-all, not search: a grid of three
         // tiles is not a list worth filtering, and closing everything had
         // nowhere else to live.
@@ -889,6 +913,23 @@ entries = [
     }
 
     #[test]
+    fn a_digit_on_a_confirmation_is_not_a_yes() {
+        let mut model = model();
+        press(&mut model, sym::DOWN);
+        press(&mut model, sym::DOWN);
+        press(&mut model, sym::RETURN);
+        assert!(model.is_confirm());
+        for digit in ['1', '2'] {
+            assert_eq!(
+                model.handle(&Key::with_text(digit as u32, digit)),
+                Step::Nothing
+            );
+        }
+        assert_eq!(model.handle(&Key::new(sym::BUTTON_X)), Step::Nothing);
+        assert!(model.is_confirm(), "still asking");
+    }
+
+    #[test]
     fn submenu_rows_are_marked_for_the_chevron() {
         let model = model();
         let rows = model.visible_rows();
@@ -995,6 +1036,49 @@ entries = [
                 payload: "con:34".into()
             })
         );
+    }
+
+    fn windows(ids: &[i64]) -> Vec<crate::providers::Item> {
+        std::iter::once(crate::providers::Item::new(
+            "Launcher",
+            crate::providers::HOME,
+        ))
+        .chain(
+            ids.iter()
+                .map(|id| crate::providers::Item::new(format!("w{id}"), format!("con:{id}"))),
+        )
+        .collect()
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_window_when_one_before_it_closes() {
+        let mut model = model();
+        model.push_dynamic(Builtin::Windows, "Windows", windows(&[12, 34, 56]));
+        press(&mut model, sym::DOWN);
+        assert_eq!(model.selected_payload(), Some("con:34"));
+        model.replace_dynamic(windows(&[34, 56]));
+        assert_eq!(model.selected_payload(), Some("con:34"));
+        // Its own window gone, the cursor takes the one that slid into place.
+        model.replace_dynamic(windows(&[56]));
+        assert_eq!(model.selected_payload(), Some("con:56"));
+    }
+
+    #[test]
+    fn a_search_survives_the_rows_being_read_again() {
+        let mut model = model();
+        let nets = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| crate::providers::Item::new(*n, *n))
+                .collect::<Vec<_>>()
+        };
+        model.push_dynamic(Builtin::Wifi, "Wi-Fi", nets(&["home", "cafe", "hotel"]));
+        model.handle(&Key::new(sym::BUTTON_X));
+        model.handle(&Key::with_text('h' as u32, 'h'));
+        model.replace_dynamic(nets(&["home", "cafe", "hotel", "harbour"]));
+        let list = &model.screen().list;
+        assert_eq!(list.mode(), pt35_ui::keys::Mode::Filter);
+        assert_eq!(list.filter(), "h");
     }
 
     #[test]

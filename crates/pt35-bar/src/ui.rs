@@ -245,10 +245,8 @@ impl App for Bar {
             let stamp = theme_stamp();
             if stamp != self.theme_stamp {
                 self.theme_stamp = stamp;
-                if let Ok(theme) = pt35_common::load_theme() {
-                    self.theme = theme;
-                    restyled = true;
-                }
+                self.theme = pt35_common::load_theme();
+                restyled = true;
             }
         }
         let clock = now(&self.theme);
@@ -557,7 +555,7 @@ impl App for Bar {
 }
 
 pub fn run() -> Result<()> {
-    let theme: Theme = pt35_common::load_theme().unwrap_or_default();
+    let theme: Theme = pt35_common::load_theme();
     let font = Font::load(&theme.font.family)?;
     let mono = Font::load(&theme.font.family_mono).or_else(|_| Font::load(&theme.font.family))?;
     let feed = StatusFeed::default();

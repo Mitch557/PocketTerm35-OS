@@ -14,6 +14,8 @@ pub enum Plan {
     Ctl(Vec<String>),
     /// Run this through `sh -c`.
     Shell(String),
+    /// Run this program with these arguments, no shell in between.
+    Spawn(Vec<String>),
     /// Record an Appearance pick, `section.key=value`.
     Theme(String),
     /// Nothing to do (an informational row, e.g. on the About screen).
@@ -49,16 +51,19 @@ fn dynamic(builtin: Builtin, payload: &str) -> Plan {
             None => Plan::Nothing,
         },
         // Joining a network may need a passphrase, so it happens in a terminal
-        // the user can actually type into.
-        Builtin::Wifi => Plan::Shell(format!(
-            "foot -a pt35-wifi sh -c \"nmcli --ask device wifi connect {}; read -r _\"",
-            shell_quote(payload)
-        )),
+        // the user can actually type into. The name goes in as `$1`, never
+        // into the script: anyone nearby can name a network `$(...)`.
+        Builtin::Wifi => in_terminal(
+            "pt35-wifi",
+            r#"nmcli --ask device wifi connect "$1"; read -r _"#,
+            payload,
+        ),
         // Pairing may ask for a PIN, so it runs where it can be typed.
-        Builtin::Bluetooth => Plan::Shell(format!(
-            "foot -a pt35-bt sh -c \"pt35-quick bluetooth connect {}; read -r _\"",
-            shell_quote(payload)
-        )),
+        Builtin::Bluetooth => in_terminal(
+            "pt35-bt",
+            r#"pt35-quick bluetooth connect "$1"; read -r _"#,
+            payload,
+        ),
         // "volume 40" / "brightness 70" are already pt35ctl commands.
         Builtin::Audio | Builtin::Display => {
             Plan::Ctl(payload.split_whitespace().map(str::to_string).collect())
@@ -71,6 +76,14 @@ fn dynamic(builtin: Builtin, payload: &str) -> Plan {
         | Builtin::Appearance
         | Builtin::About => Plan::Nothing,
     }
+}
+
+fn in_terminal(app_id: &str, script: &str, arg: &str) -> Plan {
+    Plan::Spawn(
+        ["foot", "-a", app_id, "sh", "-c", script, "sh", arg]
+            .map(str::to_string)
+            .to_vec(),
+    )
 }
 
 /// Section, keys, and whether the section is replaced whole.
@@ -144,13 +157,22 @@ pub fn perform(command: &Command) -> Result<(), String> {
             }
             Ok(())
         }
-        Plan::Shell(cmd) => std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .spawn()
-            .map(|_| ())
+        Plan::Shell(cmd) => spawn(std::process::Command::new("sh").arg("-c").arg(&cmd))
             .map_err(|e| format!("{cmd}: {e}")),
+        Plan::Spawn(argv) => {
+            let (program, args) = argv.split_first().ok_or("nothing to run")?;
+            spawn(std::process::Command::new(program).args(args))
+                .map_err(|e| format!("{program}: {e}"))
+        }
     }
+}
+
+/// Start a child and reap it when it exits: the desktop menu can stay up for
+/// hours, and every helper left unwaited would sit there as a zombie.
+fn spawn(command: &mut std::process::Command) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -181,14 +203,28 @@ mod tests {
     }
 
     #[test]
-    fn wifi_names_are_quoted_for_the_shell() {
-        let Plan::Shell(cmd) = plan(&Command::Dynamic {
+    fn a_network_name_is_an_argument_not_part_of_the_script() {
+        let name = r#"x$(touch /tmp/pwned)`id`"'\"#;
+        let Plan::Spawn(argv) = plan(&Command::Dynamic {
             builtin: Builtin::Wifi,
-            payload: "My Net's AP".into(),
+            payload: name.into(),
         }) else {
-            panic!("expected a shell plan");
+            panic!("expected a spawn plan");
         };
-        assert!(cmd.contains(r"'My Net'\''s AP'"), "{cmd}");
+        assert_eq!(argv[..5], ["foot", "-a", "pt35-wifi", "sh", "-c"]);
+        assert!(!argv[5].contains(name));
+        assert_eq!(argv[6..], ["sh", name]);
+    }
+
+    #[test]
+    fn a_device_address_is_an_argument_too() {
+        let Plan::Spawn(argv) = plan(&Command::Dynamic {
+            builtin: Builtin::Bluetooth,
+            payload: "AA:BB:CC:DD:EE:FF".into(),
+        }) else {
+            panic!("expected a spawn plan");
+        };
+        assert_eq!(argv.last().map(String::as_str), Some("AA:BB:CC:DD:EE:FF"));
     }
 
     #[test]

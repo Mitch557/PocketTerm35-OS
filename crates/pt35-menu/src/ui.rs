@@ -243,6 +243,13 @@ pub struct Menu {
     /// Switcher previews read so far, by window id, with the file's mtime so
     /// a fresher capture replaces them.
     previews: std::collections::HashMap<i64, Preview>,
+    /// Captures that would not decode, by the mtime they had, so a bad file is
+    /// read once and not on every frame.
+    bad_previews: std::collections::HashMap<i64, std::time::SystemTime>,
+    /// The cards the last frame drew. Only those are waiting for a picture.
+    cards_drawn: Vec<i64>,
+    /// A drag that began on the scrollbar, until the button or finger lifts.
+    scrolling: bool,
 }
 
 /// One window's picture, as pt35d captured it.
@@ -257,9 +264,13 @@ fn preview_path(id: i64) -> std::path::PathBuf {
     pt35_common::paths::previews_dir().join(format!("{id}.ppm"))
 }
 
+fn preview_modified(id: i64) -> Option<std::time::SystemTime> {
+    std::fs::metadata(preview_path(id)).ok()?.modified().ok()
+}
+
 fn read_preview(id: i64) -> Option<Preview> {
     let path = preview_path(id);
-    let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+    let modified = preview_modified(id)?;
     let (width, height, rgb) = pt35_ui::pixel::parse_ppm(&std::fs::read(&path).ok()?)?;
     Some(Preview {
         modified,
@@ -374,7 +385,9 @@ impl Menu {
             mono_bold,
             model,
             windows: status.as_ref().map(|s| s.windows.len()).unwrap_or(0),
-            desktop: status.as_ref().is_none_or(|s| s.workspace_empty()),
+            // No daemon is no desktop: the menu has to be closable then, or it
+            // covers everything with nothing able to take it down.
+            desktop: status.as_ref().is_some_and(|s| s.workspace_empty()),
             status,
             row_hits: Vec::new(),
             strip_scroll: None,
@@ -387,13 +400,22 @@ impl Menu {
             error: None,
             loading: None,
             since_poll: 0,
-            apps: pt35_common::load_config("pt35/apps.toml").unwrap_or_default(),
+            apps: pt35_common::load_config("pt35/apps.toml"),
             motion: Motion::new(theme_animations),
             hover_sent: None,
             launcher_sent: None,
             scan_until: None,
             previews: std::collections::HashMap::new(),
+            bad_previews: std::collections::HashMap::new(),
+            cards_drawn: Vec::new(),
+            scrolling: false,
         }
+    }
+
+    /// A card with no picture yet whose capture is there to be read.
+    fn preview_wanted(&self, id: i64) -> bool {
+        !self.previews.contains_key(&id)
+            && preview_modified(id).is_some_and(|m| self.bad_previews.get(&id) != Some(&m))
     }
 
     /// Whether a launcher row already has a window open.
@@ -576,6 +598,8 @@ impl Menu {
     /// hit-tested does something.
     fn press(&mut self, button: &str) -> bool {
         let key = match button {
+            // In Mouse mode B is the right button, and its pill says Options.
+            "B" if self.mouse_mode() => return self.options_here(),
             "<>" => Key::new(pt35_ui::keys::sym::RIGHT),
             "Bksp" => Key::new(pt35_ui::keys::sym::BACKSPACE),
             "^v" => Key::new(pt35_ui::keys::sym::DOWN),
@@ -594,6 +618,23 @@ impl Menu {
         // Through `key`, so a pill does what its button does: R, L and Select
         // are handled there, before the list sees them.
         App::key(self, key)
+    }
+
+    fn mouse_mode(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|s| s.input_mode == pt35_common::ipc::InputMode::Mouse)
+    }
+
+    /// The right-click menu of the row under the cursor, as if clicked there.
+    fn options_here(&mut self) -> bool {
+        let cursor = self.model.screen().list.cursor_index();
+        match self.row_hits.iter().find(|hit| hit.4 == cursor).copied() {
+            Some((left, top, right, bottom, _)) => {
+                self.back_click(f64::from((left + right) / 2), f64::from((top + bottom) / 2))
+            }
+            None => true,
+        }
     }
 
     /// Ask the daemon to do something and wait for the reply. Waiting is the
@@ -617,7 +658,7 @@ impl Menu {
     fn resync(&mut self) {
         self.status = crate::live::status();
         self.windows = self.status.as_ref().map_or(0, |s| s.windows.len());
-        self.desktop = self.status.as_ref().is_none_or(|s| s.workspace_empty());
+        self.desktop = self.status.as_ref().is_some_and(|s| s.workspace_empty());
         let Some(builtin) = self.model.dynamic_builtin() else {
             return;
         };
@@ -681,7 +722,18 @@ impl Menu {
                 if let Err(message) = self.ctl(&args) {
                     self.error = Some(message);
                 }
-                self.resync();
+                let quick = self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Quick);
+                match self.model.dynamic_items().filter(|_| quick) {
+                    Some(items) => {
+                        let mut items = items.to_vec();
+                        self.status = crate::live::status();
+                        if let Some(status) = &self.status {
+                            providers::patch_levels(&mut items, status);
+                        }
+                        self.model.replace_dynamic(items);
+                    }
+                    None => self.resync(),
+                }
                 true
             }
             Step::RunStay(command) => {
@@ -693,12 +745,15 @@ impl Menu {
                     self.scan_until = Some(std::time::Instant::now() + Duration::from_secs(13));
                 }
                 if matches!(command, crate::model::Command::Theme(_)) {
-                    self.theme = pt35_common::load_theme().unwrap_or_default();
+                    self.theme = pt35_common::load_theme();
                 }
                 // A shell payload is a detached script, so its effect lands after
                 // it has been spawned. Everything else went through the daemon,
                 // which had already applied it when it replied.
-                if matches!(exec::plan(&command), exec::Plan::Shell(_)) {
+                if matches!(
+                    exec::plan(&command),
+                    exec::Plan::Shell(_) | exec::Plan::Spawn(_)
+                ) {
                     std::thread::sleep(std::time::Duration::from_millis(120));
                 }
                 self.resync();
@@ -1519,6 +1574,7 @@ impl Menu {
         let rows = self.model.visible_rows();
         let cursor = self.model.screen().list.cursor_index() as i32;
         self.row_hits.clear();
+        self.cards_drawn.clear();
         if rows.is_empty() {
             self.draw_nothing_here(canvas, top, canvas.width as i32);
             return;
@@ -1595,9 +1651,17 @@ impl Menu {
                 .strip_prefix("con:")
                 .and_then(|id| id.parse::<i64>().ok());
             if let Some(id) = id.filter(|_| theme.menu.window_previews) {
-                if let std::collections::hash_map::Entry::Vacant(slot) = self.previews.entry(id) {
-                    if let Some(preview) = read_preview(id) {
-                        slot.insert(preview);
+                self.cards_drawn.push(id);
+                if self.preview_wanted(id) {
+                    match read_preview(id) {
+                        Some(preview) => {
+                            self.previews.insert(id, preview);
+                        }
+                        None => {
+                            if let Some(modified) = preview_modified(id) {
+                                self.bad_previews.insert(id, modified);
+                            }
+                        }
                     }
                 }
             }
@@ -1910,10 +1974,7 @@ impl Menu {
         let on_quick_setting = self.model.focused_adjust().is_some();
         let readonly = self.readonly();
         let empty = self.model.screen().list.is_empty();
-        let mouse = self
-            .status
-            .as_ref()
-            .is_some_and(|s| s.input_mode == pt35_common::ipc::InputMode::Mouse);
+        let mouse = self.mouse_mode();
         let hints: &[Hint] = match (filtering, on_switcher, on_quick_setting) {
             (true, _, _) => FILTER_HINTS,
             // In Mouse mode the face buttons are the mouse, here as anywhere.
@@ -1933,7 +1994,8 @@ impl Menu {
             // desktop there is nothing to close the menu onto. A legend that
             // names a key which does nothing is worse than a shorter legend.
             .filter(|hint| !(rooted && hint.button == "Y"))
-            .filter(|hint| !(pinned && hint.button == "B"))
+            // B as Back, that is. In Mouse mode it is the right button.
+            .filter(|hint| !(pinned && hint.button == "B" && !mouse))
             .filter(|hint| !(on_switcher && on_home_tile && hint.action == "Close"))
             .map(|hint| {
                 if on_switcher && on_home_tile && hint.button == "A" {
@@ -1953,7 +2015,7 @@ impl Menu {
             .map(|hint| {
                 // At the top screen back means out. On the screen the menu was
                 // opened on it is still "Back": back to your app.
-                if rooted && !back_closes && hint.button == "B" {
+                if rooted && !back_closes && hint.button == "B" && !mouse {
                     Hint {
                         button: "B",
                         action: "Close",
@@ -2088,13 +2150,14 @@ impl App for Menu {
                 }
                 drawn = true;
             }
-            // And a first capture, for a card that had none.
+            // And a first capture, for a card on screen that had none. Cards
+            // out of sight do not count: they would keep this redrawing for as
+            // long as the switcher is open.
             let missing = self
-                .model
-                .visible_rows()
-                .iter()
-                .filter_map(|row| row.payload.strip_prefix("con:")?.parse::<i64>().ok())
-                .any(|id| !self.previews.contains_key(&id) && preview_path(id).exists());
+                .cards_drawn
+                .clone()
+                .into_iter()
+                .any(|id| self.preview_wanted(id));
             if missing && self.theme.menu.window_previews {
                 drawn = true;
             }
@@ -2122,7 +2185,12 @@ impl App for Menu {
         }
         self.status = status;
         self.windows = self.status.as_ref().map_or(0, |s| s.windows.len());
-        self.desktop = self.status.as_ref().is_none_or(|s| s.workspace_empty());
+        self.desktop = self.status.as_ref().is_some_and(|s| s.workspace_empty());
+        // pt35d finds the firmware a moment after login, and the desktop menu
+        // may have been up since before that.
+        if let Some(status) = &self.status {
+            pt35_ui::keys::set_letters_are_buttons(!status.pt35_firmware);
+        }
         // A dynamic screen's rows were built by its provider and are frozen, so
         // a fresh Status is not enough on its own.
         if let Some(builtin) = self.model.dynamic_builtin() {
@@ -2236,6 +2304,8 @@ impl App for Menu {
                     return true;
                 }
                 (Some(index), Navigation::Activate) => return self.open_side(index),
+                // A search is of the apps: the cursor goes back to them.
+                (Some(_), Navigation::StartFilter) => self.side = None,
                 _ => {}
             }
         }
@@ -2280,10 +2350,16 @@ impl App for Menu {
     /// A drag on the scrollbar moves the list. Anywhere else it is a pointer
     /// moving with a button held, which selects like any other.
     fn drag(&mut self, x: f64, y: f64) -> bool {
-        if self.on_scrollbar(x as i32, y as i32) {
+        // Once it has the scrollbar the drag keeps it, wherever it wanders.
+        if self.scrolling || self.on_scrollbar(x as i32, y as i32) {
+            self.scrolling = true;
             return self.scroll_to(y as i32);
         }
         self.hover(x, y)
+    }
+
+    fn touch_end(&mut self) {
+        self.scrolling = false;
     }
 
     /// A right click opens the row's menu, the way it does on any desktop.
@@ -2316,6 +2392,18 @@ impl App for Menu {
 
     fn scroll(&mut self, down: bool) -> bool {
         self.popup = None;
+        // The D-pad wraps from the last row to the first. A wheel stops at the
+        // end, as a wheel does anywhere else.
+        let list = &self.model.screen().list;
+        let at_end = if down {
+            list.selected_position() + 1 >= list.len()
+        } else {
+            list.selected_position() == 0
+        };
+        // `true`: to the layer, false from here means quit.
+        if at_end && self.side.is_none() {
+            return true;
+        }
         let sym = if down {
             pt35_ui::keys::sym::DOWN
         } else {
@@ -2325,6 +2413,11 @@ impl App for Menu {
     }
 
     fn touch(&mut self, x: f64, y: f64) -> bool {
+        // The release that ends a scrollbar drag. Whatever is under it now
+        // was not what the drag was for.
+        if std::mem::take(&mut self.scrolling) {
+            return true;
+        }
         let (x, y) = (x as i32, y as i32);
         // A click with the right-click menu up is for the menu: on a row it
         // does that row, anywhere else it only closes the menu.
@@ -2364,7 +2457,8 @@ impl App for Menu {
             }
             // A slider is dragged with the D-pad, so a tap on one has to mean
             // something too: the left half turns it down and the right half up.
-            if let Some(adjust) = self.model.adjust_at(index) {
+            let item = self.model.screen().list.item_in_window(index);
+            if let Some(adjust) = item.and_then(|item| self.model.adjust_at(item)) {
                 let up = x > (left + right) / 2;
                 return self.apply(Step::Adjust(adjust, up));
             }
@@ -2376,7 +2470,11 @@ impl App for Menu {
 
     fn draw(&mut self, canvas: &mut Canvas) {
         self.scrollbar = None;
-        let mut hint_top = canvas.height as i32 - self.theme.menu.hint_height as i32;
+        let hint_top = canvas.height as i32 - self.theme.menu.hint_height as i32;
+        // Where the screen's own content stops: above the hints, and above an
+        // error when there is one. The hints stay where they are, or they
+        // would be drawn over the error.
+        let mut body_bottom = hint_top;
         if let Some(message) = self.error.clone() {
             let size = self.theme.font.size_hint;
             let height = 26;
@@ -2393,7 +2491,7 @@ impl App for Menu {
                 size,
                 self.theme.color.background,
             );
-            hint_top = y;
+            body_bottom = y;
         }
         let screen = (self.model.depth(), self.model.screen().title.clone());
         self.motion.screen(screen);
@@ -2429,15 +2527,15 @@ impl App for Menu {
             let _ = crate::live::request(&pt35_common::ipc::Request::SwitcherHover { id: None });
         }
         if quick {
-            self.draw_quick(canvas, body_top, hint_top - 4);
+            self.draw_quick(canvas, body_top, body_bottom - 4);
         } else if picker {
-            self.draw_windows(canvas, body_top, hint_top - 4);
+            self.draw_windows(canvas, body_top, body_bottom - 4);
         } else if self.on_launcher() {
-            self.draw_launcher(canvas, body_top, hint_top - 4);
+            self.draw_launcher(canvas, body_top, body_bottom - 4);
         } else {
             match self.model.layout() {
-                Layout::Grid => self.draw_tiles(canvas, body_top, hint_top - 4),
-                Layout::List => self.draw_rows(canvas, body_top, hint_top),
+                Layout::Grid => self.draw_tiles(canvas, body_top, body_bottom - 4),
+                Layout::List => self.draw_rows(canvas, body_top, body_bottom),
             }
         }
         self.draw_hints(canvas, hint_top);
@@ -2446,8 +2544,8 @@ impl App for Menu {
 }
 
 pub fn run(page: Option<String>) -> Result<()> {
-    let theme: Theme = pt35_common::load_theme().unwrap_or_default();
-    let tree = pt35_common::load_config("pt35/menu.toml").unwrap_or_default();
+    let (theme, theme_problems) = pt35_common::load_theme_report();
+    let tree = pt35_common::load_config("pt35/menu.toml");
     // Each face takes ~50ms to parse on a Pi, and the menu is started on every
     // open. In parallel, the four cost one.
     let load = |faces: Vec<String>| {
@@ -2478,12 +2576,15 @@ pub fn run(page: Option<String>) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("font loader panicked"))?
     };
     let (font, mono, bold, mono_bold) = (join(font)?, join(mono)?, join(bold)?, join(mono_bold)?);
-    let body = 480 - theme.bar.height - theme.menu.header_height - theme.menu.hint_height;
+    let body = 480u32
+        .saturating_sub(theme.bar.height)
+        .saturating_sub(theme.menu.header_height)
+        .saturating_sub(theme.menu.hint_height);
     // How many rows actually fit, not how many the theme asks for: a list that
     // hands out one row more than the body can draw hides the cursor on it.
-    let rows =
-        ((body - 12) / theme.menu.row_height).clamp(1, theme.menu.rows_visible.max(1)) as usize;
-    let grid_rows = (body / (theme.menu.tile_height + theme.menu.gap)).max(1) as usize;
+    let rows = (body.saturating_sub(12) / theme.menu.row_height.max(1))
+        .clamp(1, theme.menu.rows_visible.max(1)) as usize;
+    let grid_rows = (body / (theme.menu.tile_height + theme.menu.gap).max(1)).max(1) as usize;
     // A screen name may be a builtin rather than a page in menu.toml, and that
     // includes the root: the launcher is assembled, not written down.
     let tree: pt35_common::menu::MenuTree = tree;
@@ -2504,6 +2605,10 @@ pub fn run(page: Option<String>) -> Result<()> {
         model.mark_entry();
     }
     let mut menu = Menu::new(theme, font, mono, bold, mono_bold, model);
+    // The banner is the only place a broken theme file can say so.
+    if let Some(problem) = theme_problems.first() {
+        menu.error = Some(format!("Left out {problem}"));
+    }
     // Through `open`, so a slow screen shows its placeholder at once instead of
     // holding the whole menu back until nmcli answers.
     if let Some((_, Some(builtin))) = start.filter(|(_, b)| b.is_some() && *b != root) {

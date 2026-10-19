@@ -122,7 +122,7 @@ pub fn dock(natural: &[i32], fixed: &[i32], available: i32, gap: i32) -> Vec<Slo
         }
         width = share;
     }
-    width
+    let slots: Vec<Slot> = width
         .into_iter()
         .zip(fixed)
         .map(|(width, fixed)| {
@@ -136,7 +136,20 @@ pub fn dock(natural: &[i32], fixed: &[i32], available: i32, gap: i32) -> Vec<Slo
                 Slot { width, label_width }
             }
         })
-        .collect()
+        .collect();
+    // Even bare icons do not fit. Squeezed, every slot is still there, and none
+    // runs on under the status icons, where a tap would hit those instead.
+    if slots.iter().map(|s| s.width).sum::<i32>() > budget {
+        let each = (budget / count as i32).max(4);
+        return vec![
+            Slot {
+                width: each,
+                label_width: 0,
+            };
+            count
+        ];
+    }
+    slots
 }
 
 /// Right-hand side: state of the machine. `clock` is passed in so the caller
@@ -182,24 +195,23 @@ pub fn right(status: Option<&Status>, theme: &Theme, clock: &str) -> Vec<Segment
         // A cable carries the traffic whenever it is in, so it wins over the
         // radio. A link with no signal reading is not a radio either: four
         // empty bars would say the opposite of the truth.
-        if theme.bar.show_network && status.network.is_some() {
-            out.push(
-                Segment::icon(
-                    match (&status.ethernet, status.network_signal) {
-                        (None, Some(signal)) => Icon::Wifi { signal },
-                        _ => Icon::Wired,
-                    },
-                    theme.color.foreground,
-                )
-                .tap(Tap::Network),
-            );
+        //
+        // Up but neither is a container's veth or a VPN with nothing under it:
+        // no icon, rather than a cable that is not there.
+        let icon = match (&status.ethernet, status.network_signal) {
+            (Some(_), _) => Some(Icon::Wired),
+            (None, Some(signal)) => Some(Icon::Wifi { signal }),
+            (None, None) => None,
+        };
+        if let Some(icon) = icon.filter(|_| theme.bar.show_network && status.network.is_some()) {
+            out.push(Segment::icon(icon, theme.color.foreground).tap(Tap::Network));
         }
         match (theme.bar.show_battery, status.battery_percent) {
             (Visibility::Never, _) => {}
             // `auto` is the interesting case: on a unit where the RP2040 keeps
             // the gauge to itself there is nothing to show, so show nothing.
-            (Visibility::Auto, None) => {}
-            (Visibility::Always, None) => out.push(Segment::text("--", theme.color.muted)),
+            // `always` too: a gauge that can only read `--` is not one.
+            (Visibility::Auto | Visibility::Always, None) => {}
             (_, Some(percent)) => {
                 let charging = status.charging.unwrap_or(false);
                 let color = match percent {
@@ -253,14 +265,28 @@ mod tests {
         let theme = Theme::default();
         let wired = Status {
             network: Some("eth0".into()),
+            ethernet: Some("eth0".into()),
             network_signal: None,
             ..status()
         };
         assert!(right(Some(&wired), &theme, "12:34")
             .iter()
             .any(|s| s.icon == Some(Icon::Wired)));
+        let veth = Status {
+            network: Some("veth0".into()),
+            ethernet: None,
+            ..wired.clone()
+        };
+        assert!(
+            right(Some(&veth), &theme, "12:34")
+                .iter()
+                .all(|s| s.icon.is_none()
+                    || matches!(s.icon, Some(Icon::Mode { .. }) | Some(Icon::Volume { .. }))),
+            "no cable icon without a cable"
+        );
         let wifi = Status {
             network: Some("wlan0".into()),
+            ethernet: None,
             network_signal: Some(70),
             ..wired
         };
@@ -275,6 +301,14 @@ mod tests {
         assert!(right(Some(&both), &theme, "12:34")
             .iter()
             .any(|s| s.icon == Some(Icon::Wired)));
+    }
+
+    #[test]
+    fn a_dock_too_full_for_icons_squeezes_rather_than_overflows() {
+        let slots = dock(&[38; 20], &[38; 20], 417, 6);
+        assert_eq!(slots.len(), 20, "every window keeps a slot");
+        let used: i32 = slots.iter().map(|s| s.width).sum::<i32>() + 6 * 19;
+        assert!(used <= 417, "{used}px in 417px");
     }
 
     #[test]

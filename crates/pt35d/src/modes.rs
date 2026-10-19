@@ -65,11 +65,14 @@ fn common() -> Vec<Bind> {
     ]
 }
 
+/// None of these repeat. Opening the menu takes them off, and it can open
+/// while one is held: B quits an app, the desktop menu comes up. A repeating
+/// binding taken off under a held key is the sway 1.10 segfault.
 fn buttons() -> Vec<Bind> {
     vec![
-        Bind::new("", A, "exec pt35ctl key enter"),
-        Bind::new("", B, "exec pt35ctl key escape"),
-        Bind::new("", X, "exec pt35ctl key tab"),
+        Bind::new("--no-repeat", A, "exec pt35ctl key enter"),
+        Bind::new("--no-repeat", B, "exec pt35ctl key escape"),
+        Bind::new("--no-repeat", X, "exec pt35ctl key tab"),
         // The app's own menu bar. Fullscreen stays on $mod+f.
         Bind::new("--no-repeat", Y, "exec pt35ctl key f10"),
     ]
@@ -178,6 +181,19 @@ mod tests {
             assert_eq!(find(R).action, "exec pt35ctl mode toggle");
             assert_eq!(find(L).flags, "--no-repeat");
             assert_eq!(find(R).flags, "--no-repeat");
+        }
+    }
+
+    #[test]
+    fn nothing_the_menu_takes_off_repeats() {
+        let pointer = Pointer::default();
+        for mode in [InputMode::Buttons, InputMode::Mouse] {
+            let kept = menu_binds(mode, &pointer);
+            for bind in binds(mode, &pointer) {
+                if !kept.contains(&bind) {
+                    assert_ne!(bind.flags, "", "{} repeats", bind.key);
+                }
+            }
         }
     }
 

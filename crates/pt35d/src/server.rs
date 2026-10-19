@@ -46,33 +46,43 @@ pub struct Server {
     subscribers: Arc<Subscribers>,
 }
 
-impl Server {
-    pub fn bind(session: Arc<Mutex<Session>>, subscribers: Arc<Subscribers>) -> Result<Self> {
-        let path = paths::socket_path();
-        // On a session restart the previous pt35d can still hold the socket for
-        // a second or two, until it notices sway is gone. Wait for it rather
-        // than leaving the new session with no daemon.
-        for attempt in 0..12 {
-            if !path.exists() {
-                break;
-            }
-            if UnixStream::connect(&path).is_err() {
-                std::fs::remove_file(&path).ok();
-                break;
-            }
-            if attempt == 11 {
-                anyhow::bail!("another pt35d is already listening on {}", path.display());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+/// Take the socket. First thing at startup: a second pt35d must give up before
+/// it has touched the running session's bindings or menu.
+pub fn listen() -> Result<UnixListener> {
+    let path = paths::socket_path();
+    // On a session restart the previous pt35d can still hold the socket for
+    // a second or two, until it notices sway is gone. Wait for it rather
+    // than leaving the new session with no daemon.
+    for attempt in 0..12 {
+        if !path.exists() {
+            break;
         }
-        let listener =
-            UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
-        log::info!("listening on {}", path.display());
-        Ok(Self {
+        if UnixStream::connect(&path).is_err() {
+            std::fs::remove_file(&path).ok();
+            break;
+        }
+        if attempt == 11 {
+            anyhow::bail!("another pt35d is already listening on {}", path.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let listener =
+        UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+    log::info!("listening on {}", path.display());
+    Ok(listener)
+}
+
+impl Server {
+    pub fn new(
+        listener: UnixListener,
+        session: Arc<Mutex<Session>>,
+        subscribers: Arc<Subscribers>,
+    ) -> Self {
+        Self {
             listener,
             session,
             subscribers,
-        })
+        }
     }
 
     pub fn serve(&self) {
@@ -122,26 +132,30 @@ fn handle_client(
         // Anything else may have changed what the bar draws. Waiting for the
         // next poll would show the new mode up to two seconds late.
         let changes = !matches!(request, Request::Subscribe | Request::Status);
-        let (response, status, notes) = {
+        // Everything goes out before the reply, and under the lock. The menu's
+        // own "menu off" kills the menu that sent it, so that reply always lands
+        // on a closed socket. A subscriber joins under the same lock, so nothing
+        // falls between its first status and its feed.
+        let (response, events) = {
             let mut session = session.lock().expect("session");
             let response = session.handle(request);
-            let notes = session.take_notifications();
-            (response, session.status.clone(), notes)
-        };
-        writeln!(writer, "{}", serde_json::to_string(&response)?)?;
-        writer.flush()?;
-        if !subscribers.is_empty() {
+            let events = subscribe.then(|| subscribers.add());
             if changes {
-                subscribers.broadcast(&Event::Status(status));
+                subscribers.broadcast(&Event::Status(session.status.clone()));
             }
-            for note in &notes {
+            for note in &session.take_notifications() {
                 subscribers.broadcast(note);
             }
+            (response, events)
+        };
+        if writeln!(writer, "{}", serde_json::to_string(&response)?).is_err()
+            || writer.flush().is_err()
+        {
+            return Ok(());
         }
 
-        if subscribe {
+        if let Some(events) = events {
             // This connection now belongs to the event stream until it drops.
-            let events = subscribers.add();
             for event in events {
                 if writeln!(writer, "{}", serde_json::to_string(&event)?).is_err() {
                     break;

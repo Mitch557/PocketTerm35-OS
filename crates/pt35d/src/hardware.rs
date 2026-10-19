@@ -9,12 +9,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Discovered once at startup: re-scanning sysfs on every tick is wasted IO.
+/// The battery and backlight are discovered once at startup: re-scanning sysfs
+/// on every tick is wasted IO. Network interfaces come and go (a USB adapter, a
+/// tether), so they are listed when asked, which is one readdir.
 #[derive(Debug, Default, Clone)]
 pub struct Hardware {
     pub battery: Option<PathBuf>,
     pub backlight: Option<PathBuf>,
-    pub net: Vec<PathBuf>,
+    net_root: PathBuf,
 }
 
 impl Hardware {
@@ -34,16 +36,18 @@ impl Hardware {
             .into_iter()
             .max_by_key(|p| read_u32(&p.join("max_brightness")).unwrap_or(0));
 
-        let net = list(&sysfs.join("class/net"))
-            .into_iter()
-            .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("lo"))
-            .collect();
-
         Self {
             battery,
             backlight,
-            net,
+            net_root: sysfs.join("class/net"),
         }
+    }
+
+    fn interfaces(&self) -> Vec<PathBuf> {
+        list(&self.net_root)
+            .into_iter()
+            .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("lo"))
+            .collect()
     }
 
     pub fn battery_percent(&self) -> Option<u8> {
@@ -91,7 +95,7 @@ impl Hardware {
     /// The interface carrying traffic: a cable beats Wi-Fi, as NetworkManager's
     /// route metrics do, then anything else that is up (a USB tether, a VPN).
     pub fn network(&self) -> Option<String> {
-        let up: Vec<&PathBuf> = self.net.iter().filter(|i| is_up(i)).collect();
+        let up: Vec<PathBuf> = self.interfaces().into_iter().filter(|i| is_up(i)).collect();
         up.iter()
             .find(|i| is_ethernet(i))
             .or_else(|| up.iter().find(|i| is_wireless(i)))
@@ -102,18 +106,21 @@ impl Hardware {
     /// A wired interface with a cable in. Only a real device counts: a bridge
     /// or a container's veth is up too, and is not a cable.
     pub fn ethernet(&self) -> Option<String> {
-        self.net
-            .iter()
+        self.interfaces()
+            .into_iter()
             .find(|i| is_ethernet(i) && is_up(i))
-            .and_then(|i| name(i))
+            .and_then(|i| name(&i))
     }
 
     /// Wi-Fi link quality as a percentage, whether or not the cable is the
     /// route. `None` with no Wi-Fi link.
     pub fn network_signal(&self) -> Option<u8> {
-        let iface = self.net.iter().find(|i| is_wireless(i) && is_up(i))?;
+        let iface = self
+            .interfaces()
+            .into_iter()
+            .find(|i| is_wireless(i) && is_up(i))?;
         let text = fs::read_to_string("/proc/net/wireless").ok()?;
-        wireless_quality(&text, &name(iface)?)
+        wireless_quality(&text, &name(&iface)?)
     }
 }
 

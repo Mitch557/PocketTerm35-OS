@@ -101,6 +101,20 @@ impl ListState {
         self.offset = from.offset.min(self.selected);
     }
 
+    /// Take another list's search and place, for rows rebuilt while someone
+    /// may be typing a search over them.
+    pub fn carry_from(&mut self, from: &ListState) {
+        self.mode = from.mode;
+        self.filter = from.filter.clone();
+        self.refilter();
+        self.keep_position(from);
+    }
+
+    /// The item drawn at this row of the window, by its index in the full list.
+    pub fn item_in_window(&self, index: usize) -> Option<usize> {
+        self.visible.get(self.offset + index).copied()
+    }
+
     /// Put the cursor on this item, by its index in the full list, scrolling
     /// it into view. Nothing happens if a filter hides it.
     pub fn select_item(&mut self, item: usize) {
@@ -127,6 +141,11 @@ impl ListState {
 
     pub fn filter(&self) -> &str {
         &self.filter
+    }
+
+    /// Where the cursor is among the visible items.
+    pub fn selected_position(&self) -> usize {
+        self.selected
     }
 
     pub fn selected(&self) -> Option<usize> {

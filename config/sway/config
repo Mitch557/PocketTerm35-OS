@@ -78,8 +78,11 @@ no_focus [window_type="notification"]
 exec_always --no-startup-id systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP SWAYSOCK
 exec_always --no-startup-id dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP SWAYSOCK
 
-exec --no-startup-id pt35d
-exec --no-startup-id pt35-bar
+# Started again if they die: without pt35d nothing opens the menu, and without
+# the bar there is no taskbar. pt35d exits 0 when sway goes. The bar exits when
+# its output does, so it is retried for as long as sway answers.
+exec --no-startup-id sh -c 'until pt35d; do swaymsg -t get_version >/dev/null 2>&1 || exit; sleep 2; done'
+exec --no-startup-id sh -c 'while swaymsg -t get_version >/dev/null 2>&1; do pt35-bar; sleep 2; done'
 
 ### -------------------------------------------------------------- keybindings
 # NOTE: the keyboard has a Super key of its own (row 6 of the matrix, next to

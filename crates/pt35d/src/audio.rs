@@ -74,11 +74,13 @@ pub fn apply(backend: Backend, change: Delta) -> bool {
     }
 }
 
+/// Bounded, because the caller holds the session lock: a PipeWire that has
+/// stopped answering must not take every key and the bar down with it.
 fn run(argv: &[&str]) -> Option<String> {
-    let out = Command::new(argv[0]).args(&argv[1..]).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    pt35_common::proc::output_within(
+        Command::new(argv[0]).args(&argv[1..]),
+        std::time::Duration::from_secs(1),
+    )
 }
 
 /// `wpctl get-volume` prints e.g. `Volume: 0.45` or `Volume: 0.45 [MUTED]`.

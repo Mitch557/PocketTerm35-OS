@@ -126,7 +126,9 @@ impl Sway {
         let kind = u32::from_ne_bytes(head[10..14].try_into().unwrap());
         let mut body = vec![0u8; len];
         self.stream.read_exact(&mut body)?;
-        Ok((kind, String::from_utf8(body)?))
+        // Lossy: an X11 title can be raw Latin-1, and one bad title must not
+        // cost every tree read while that window is open.
+        Ok((kind, String::from_utf8_lossy(&body).into_owned()))
     }
 
     /// Run one or more sway commands (`, `-separated, as sway expects).
@@ -148,21 +150,17 @@ impl Sway {
         Ok(())
     }
 
-    /// Focused workspace number and the focused window's name, if any.
-    pub fn focus(&mut self) -> Result<(u8, Option<String>)> {
+    /// The focused workspace's number.
+    pub fn focused_workspace(&mut self) -> Result<u8> {
         let reply = self.request(MessageType::GetWorkspaces, "")?;
         let workspaces: serde_json::Value = serde_json::from_str(&reply)?;
         let focused = workspaces
             .as_array()
             .and_then(|list| list.iter().find(|w| w["focused"].as_bool() == Some(true)));
-        let number = focused
+        Ok(focused
             .and_then(|w| w["num"].as_i64())
             .unwrap_or(1)
-            .clamp(0, 9) as u8;
-
-        let tree: serde_json::Value =
-            serde_json::from_str(&self.request(MessageType::GetTree, "")?)?;
-        Ok((number, focused_window_name(&tree)))
+            .clamp(0, 9) as u8)
     }
 }
 

@@ -30,6 +30,7 @@ const POLL: Duration = Duration::from_secs(2);
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    let listener = server::listen()?;
     let session = Arc::new(Mutex::new(state::Session::new()));
     let subscribers = Arc::new(server::Subscribers::default());
 
@@ -68,7 +69,6 @@ fn main() -> Result<()> {
             .spawn(move || events::run(session, subscribers))?;
     }
 
-    let server = server::Server::bind(session, subscribers)?;
-    server.serve();
+    server::Server::new(listener, session, subscribers).serve();
     Ok(())
 }

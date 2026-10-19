@@ -127,6 +127,9 @@ pub trait App {
         self.hover(x, y)
     }
 
+    /// The last finger came off. A pointer's release is [`App::touch`].
+    fn touch_end(&mut self) {}
+
     /// A right click at surface coordinates.
     fn back_click(&mut self, _x: f64, _y: f64) -> bool {
         true
@@ -197,8 +200,13 @@ struct State<A: App + 'static> {
     running: bool,
     base_layer: Layer,
     raised: bool,
-    /// Buttons and fingers down on this surface.
-    held: u32,
+    /// Pointer buttons down, and the fingers on the glass by touch id. Apart,
+    /// because a pointer leaving says nothing about a finger.
+    buttons: u32,
+    fingers: Vec<i32>,
+    /// Whether the last frame was mid-motion. The frame after the motion ends
+    /// is the one that puts things exactly where they stop.
+    was_animating: bool,
     app: A,
 }
 
@@ -260,7 +268,9 @@ pub fn run<A: App + 'static>(app: A, spec: SurfaceSpec) -> Result<()> {
         running: true,
         base_layer: spec.layer,
         raised: false,
-        held: 0,
+        buttons: 0,
+        fingers: Vec::new(),
+        was_animating: false,
         app,
     };
 
@@ -293,14 +303,16 @@ pub fn run<A: App + 'static>(app: A, spec: SurfaceSpec) -> Result<()> {
             Duration::from_millis(500)
         };
         event_loop.dispatch(wait, &mut state)?;
-        if state.app.animating() {
+        let animating = state.app.animating();
+        if animating || state.was_animating {
             state.dirty = true;
         }
+        state.was_animating = animating;
         // Never while a button or finger is down: sway 1.10 segfaults when a
         // surface changes layer under its own pointer grab, and a click on
         // the skull is what opens the menu that raises the bar.
         let raised = state.app.raised();
-        if raised != state.raised && state.held == 0 {
+        if raised != state.raised && state.buttons == 0 && state.fingers.is_empty() {
             state.raised = raised;
             // Takes effect on the next commit, which the redraw makes.
             state.layer.set_layer(if raised {
@@ -494,8 +506,12 @@ impl<A: App + 'static> SeatHandler for State<A> {
                 if let Some(pointer) = self.pointer.take() {
                     pointer.release();
                 }
+                // Its releases will never come.
+                self.buttons = 0;
             }
             Capability::Touch => {
+                // Its ups will never come.
+                self.fingers.clear();
                 if let Some(touch) = self.touch.take() {
                     touch.release();
                 }
@@ -595,9 +611,9 @@ impl<A: App + 'static> PointerHandler for State<A> {
     ) {
         for event in events {
             match event.kind {
-                PointerEventKind::Press { .. } => self.held += 1,
-                PointerEventKind::Release { .. } => self.held = self.held.saturating_sub(1),
-                PointerEventKind::Leave { .. } => self.held = 0,
+                PointerEventKind::Press { .. } => self.buttons += 1,
+                PointerEventKind::Release { .. } => self.buttons = self.buttons.saturating_sub(1),
+                PointerEventKind::Leave { .. } => self.buttons = 0,
                 _ => {}
             }
             if let (PointerEventKind::Enter { serial }, Some(device)) =
@@ -612,7 +628,7 @@ impl<A: App + 'static> PointerHandler for State<A> {
                 PointerEventKind::Motion { .. } => {
                     self.cursor = event.position;
                     let (x, y) = event.position;
-                    let moved = if self.held > 0 {
+                    let moved = if self.buttons > 0 {
                         self.app.drag(x, y)
                     } else {
                         self.app.hover(x, y)
@@ -668,10 +684,12 @@ impl<A: App + 'static> TouchHandler for State<A> {
         _: u32,
         _: u32,
         _: wl_surface::WlSurface,
-        _: i32,
+        id: i32,
         position: (f64, f64),
     ) {
-        self.held += 1;
+        if !self.fingers.contains(&id) {
+            self.fingers.push(id);
+        }
         if !self.app.touch(position.0, position.1) {
             self.running = false;
         }
@@ -685,9 +703,13 @@ impl<A: App + 'static> TouchHandler for State<A> {
         _: &wl_touch::WlTouch,
         _: u32,
         _: u32,
-        _: i32,
+        id: i32,
     ) {
-        self.held = self.held.saturating_sub(1);
+        self.fingers.retain(|f| *f != id);
+        if self.fingers.is_empty() {
+            self.app.touch_end();
+            self.dirty = true;
+        }
     }
 
     fn motion(
@@ -726,7 +748,9 @@ impl<A: App + 'static> TouchHandler for State<A> {
     }
 
     fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_touch::WlTouch) {
-        self.held = 0;
+        self.fingers.clear();
+        self.app.touch_end();
+        self.dirty = true;
     }
 }
 

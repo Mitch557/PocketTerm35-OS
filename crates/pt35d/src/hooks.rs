@@ -20,7 +20,10 @@ pub fn fire(name: &str, env: &[(&str, String)]) {
         cmd.env(key, value);
     }
     match cmd.spawn() {
-        Ok(_) => log::debug!("hook {name} fired"),
+        Ok(child) => {
+            crate::state::reap(child);
+            log::debug!("hook {name} fired");
+        }
         Err(e) => log::warn!("hook {name} failed to start: {e}"),
     }
 }

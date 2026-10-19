@@ -171,8 +171,18 @@ impl AppTable {
 
 /// The binary an `exec` line runs, skipping a `sh -c` wrapper.
 pub fn command_binary(exec: &str) -> Option<String> {
-    let mut words = exec.split_whitespace();
-    let first = words.next()?;
+    let exec = exec.trim_start();
+    // A .desktop file quotes a path with a space in it.
+    for quote in ['"', '\''] {
+        if let Some(rest) = exec.strip_prefix(quote) {
+            return rest
+                .split(quote)
+                .next()
+                .filter(|path| !path.is_empty())
+                .map(str::to_string);
+        }
+    }
+    let first = exec.split_whitespace().next()?;
     if first == "sh" || first == "bash" {
         // sh -c '<real command> ...': take the first word inside the quotes.
         let rest = exec.split_once("-c")?.1.trim();
@@ -297,6 +307,11 @@ mod tests {
             Some("imv-wayland")
         );
         assert_eq!(command_binary("").as_deref(), None);
+        assert_eq!(
+            command_binary("\"/opt/My App/app\" --flag").as_deref(),
+            Some("/opt/My App/app"),
+            "a quoted path is one word"
+        );
     }
 
     #[test]
