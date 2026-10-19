@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1 (2026-10-19)
+
+### Fixed
+
+- The installer no longer stops halfway when a config file the package ships
+  is already on disk. That happens on a move from a source install to the
+  package, and after editing `/etc/keyd/pocketterm35.conf`. dpkg asked which
+  copy to keep, and with no terminal the install failed. The installer now
+  keeps the file on disk and puts the package's copy beside it as
+  `.dpkg-dist`.
+- The installer no longer tells you to flash a keyboard that already runs the
+  pt35 firmware. It asks the running pt35d.
+
 ## 0.4.0 (2026-10-19)
 
 After upgrading, reflash the keyboard with `sudo pt35-kbd flash` and run
