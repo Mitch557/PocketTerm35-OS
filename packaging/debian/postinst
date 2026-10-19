@@ -64,6 +64,13 @@ else
 fi
 
 # ------------------------------------------------------------ user session
+# install -d gives only the last part of a path to the user, so a missing
+# ~/.config would be root's. It is made apart and only when missing, because
+# install also resets the mode of one that exists. The chown repairs one an
+# older postinst left to root.
+# Not through a symlink: root following one the user made could chown any file.
+[ -d "$USER_HOME/.config" ] || install -d -m700 "$USER_HOME/.config"
+[ -L "$USER_HOME/.config" ] || chown -h "$USER_NAME:$USER_NAME" "$USER_HOME/.config"
 install -d -o "$USER_NAME" -g "$USER_NAME" \
   "$USER_HOME/.config/sway" "$USER_HOME/.config/pt35" "$USER_HOME/.config/pt35/hooks" \
   "$USER_HOME/.config/foot"

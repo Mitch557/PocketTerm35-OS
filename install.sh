@@ -144,12 +144,11 @@ install_from_release() {
     clone_and_build "$tmp"
     return
   fi
-  if curl -fsSL -o "$sums" "$url/SHA256SUMS" 2>/dev/null; then
-    msg "verifying checksum"
-    run "(cd '$tmp' && grep 'pt35-desktop_arm64.deb' SHA256SUMS | sha256sum -c -)"
-  else
-    warn "no SHA256SUMS published for this release; skipping checksum verification"
-  fi
+  curl -fsSL -o "$sums" "$url/SHA256SUMS" \
+    || die "could not download SHA256SUMS for the release, so the package cannot be checked. Try again"
+  msg "verifying checksum"
+  run "(cd '$tmp' && grep 'pt35-desktop_arm64.deb' SHA256SUMS | sha256sum -c -)" \
+    || die "the downloaded package does not match SHA256SUMS"
   run "PT35_USER='$TARGET_USER' DEBIAN_FRONTEND=noninteractive apt-get install -y '$deb'"
 }
 
@@ -159,7 +158,8 @@ clone_and_build() {
   local tmp="$1"
   run "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git"
   run "git clone --depth 1 'https://github.com/$REPO' '$tmp/src'"
-  run "chown -R '$TARGET_USER' '$tmp/src'"
+  # mktemp -d is 0700 root: the build runs as the user, who must reach src.
+  run "chmod 755 '$tmp' && chown -R '$TARGET_USER' '$tmp/src'"
   install_from_source "$tmp/src"
 }
 
@@ -198,6 +198,8 @@ install_from_source() {
   run "install -d '$SHARE/ai' && install -m644 '$src/config/ai/darkwire-agents.yaml' '$SHARE/ai/'"
   run "install -Dm644 '$src/config/icons/darkwire.svg' /usr/share/icons/hicolor/scalable/apps/darkwire.svg"
   run "install -d /usr/lib/pt35 && install -m755 '$src/scripts/pt35-cpu-profile' /usr/lib/pt35/pt35-cpu-profile"
+  # --uninstall through curl has no checkout, and needs this to undo postinst.
+  run "install -m755 '$src/packaging/debian/prerm' /usr/lib/pt35/prerm"
   run "install -d '$SHARE/sway' '$SHARE/pt35' '$SHARE/foot' '$SHARE/boot' '$SHARE/fastfetch'"
   run "install -m644 '$src/config/fastfetch/skull.txt' '$SHARE/fastfetch/'"
   run "install -d /etc/xdg/fastfetch && install -m644 '$src/config/fastfetch/config.jsonc' /etc/xdg/fastfetch/"
@@ -349,6 +351,29 @@ EOF
   echo
 }
 
+# prerm undoes postinst: the boot config, greetd and the drop-ins. The copy
+# made at install first, then a checkout's, then main's for an install that
+# made no copy.
+undo_postinst() {
+  local prerm=/usr/lib/pt35/prerm src tmp
+  src=$(source_dir)
+  [ -x "$prerm" ] || [ -z "$src" ] || prerm="$src/packaging/debian/prerm"
+  if [ ! -x "$prerm" ]; then
+    tmp=$(mktemp -d)
+    prerm="$tmp/prerm"
+    curl -fsSL -o "$prerm" "https://raw.githubusercontent.com/$REPO/main/packaging/debian/prerm" \
+      && chmod 755 "$prerm" || prerm=""
+  fi
+  if [ -n "$prerm" ]; then
+    run "sh '$prerm' remove"
+    [ -z "${tmp:-}" ] || rm -rf "$tmp"
+  else
+    warn "could not fetch prerm. Still to undo by hand: the pt35-desktop block in config.txt,
+     /etc/greetd/config.toml (backup: config.toml.pt35.bak), greetd enabled,
+     /etc/systemd/logind.conf.d/pt35.conf and /etc/systemd/system/greetd.service.d/pt35-vt1.conf"
+  fi
+}
+
 do_uninstall() {
   if command -v pt35-ai >/dev/null; then
     msg "removing the AI agent and its models"
@@ -360,12 +385,7 @@ do_uninstall() {
     return
   fi
   msg "removing pt35-desktop (installed from source)"
-  if [ -x "$SHARE/../../lib/pt35/pt35-cpu-profile" ] || [ -d "$SHARE" ]; then
-    local src; src=$(source_dir)
-    if [ -n "$src" ] && [ -x "$src/packaging/debian/prerm" ]; then
-      run "'$src/packaging/debian/prerm' remove"
-    fi
-  fi
+  if [ -d "$SHARE" ] || [ -d /usr/lib/pt35 ]; then undo_postinst; fi
   run "rm -f /usr/bin/pt35d /usr/bin/pt35ctl /usr/bin/pt35-bar /usr/bin/pt35-menu \
         /usr/bin/pt35-session /usr/bin/pt35-kbd /usr/bin/pt35-quick /usr/bin/pt35-hello \
         /usr/bin/pt35-ai /usr/lib/systemd/system/pt35-ai.service \

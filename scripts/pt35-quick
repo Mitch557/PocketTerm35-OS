@@ -4,6 +4,9 @@
 # nmcli and bluetoothctl have no "toggle", and the menu has no shell: it runs
 # one command and shows what it prints on failure.
 set -eu
+# The checks below read English ("enabled", "Powered: yes").
+export LC_ALL=C.UTF-8
+unset LANGUAGE
 
 usage() {
   echo "usage: pt35-quick wifi|bluetooth on|off|toggle" >&2

@@ -162,9 +162,26 @@ install_runtime() {
 # ---------------------------------------------------------------- models
 fetch_model() {
   model_info "$1" || die "unknown model '$1'; one of: $MODEL_IDS"
-  local dest="$MODELS/$M_FILE" part="$MODELS/$M_FILE.part" have=0 avail bar=-sS
+  local dest="$MODELS/$M_FILE" part="$MODELS/$M_FILE.part" stamp="$MODELS/$M_FILE.sha256"
+  local have=0 avail bar=-sS
   [ -t 2 ] && bar=-#
-  [ -f "$dest" ] && { msg "$M_LABEL is already downloaded"; return; }
+  # The stamp is the sha the file was verified against. A model pinned anew
+  # under the same name is fetched again; one from before stamps is checked.
+  if [ -f "$dest" ] && [ ! -f "$stamp" ]; then
+    msg "checking $M_FILE ($(gb "$M_SIZE")) against its pinned checksum, once"
+    if echo "$M_SHA256  $dest" | sha256sum -c --quiet - >/dev/null 2>&1; then
+      echo "$M_SHA256" > "$stamp"
+      chmod 644 "$stamp"
+    fi
+  fi
+  if [ -f "$dest" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$M_SHA256" ]; then
+    msg "$M_LABEL is already downloaded"
+    return
+  fi
+  if [ -f "$dest" ]; then
+    warn "$M_FILE is not the pinned build: downloading it again"
+    rm -f "$dest" "$stamp"
+  fi
 
   install -d "$MODELS"
   [ -f "$part" ] && have=$(stat -c %s "$part")
@@ -186,6 +203,8 @@ fetch_model() {
   fi
   chmod 644 "$part"
   mv "$part" "$dest"
+  echo "$M_SHA256" > "$stamp"
+  chmod 644 "$stamp"
 }
 
 # Only models on disk go in, so /v1/models (and darkwire's list) shows what

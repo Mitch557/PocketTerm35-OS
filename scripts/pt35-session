@@ -12,7 +12,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 # The panel is 640x480 and stays at scale 1. An app that needs to shrink does it
 # itself: pt35d passes its profile's scale as GDK_DPI_SCALE / QT_SCALE_FACTOR.
 # These are the session-wide defaults it overrides.
-export QT_QPA_PLATFORM=wayland
+export QT_QPA_PLATFORM="wayland;xcb"
 export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
 export QT_ENABLE_HIGHDPI_SCALING=0
 export QT_FONT_DPI=96

@@ -99,8 +99,9 @@ default:
       - { action: allow, argv: [vcgencmd, get_throttled] }
       - { action: allow, argv: [pt35-ai, status] }
       - { action: allow, argv: [git, status, "*"] }
-      - { action: allow, argv: [git, diff, "*"] }
-      - { action: allow, argv: [git, log, "*"] }
+      # --output can overwrite any file.
+      - { action: ask, argv: [git, diff, "*"] }
+      - { action: ask, argv: [git, log, "*"] }
       - { action: deny, argv: [git, push, "*"] }
       - { action: deny, argv: [sudo, "*"] }
       - { action: deny, argv: [pt35ctl, power, "*"] }
@@ -147,8 +148,8 @@ code:
     timeoutMs: 300000
     rules:
       - { action: allow, argv: [git, status, "*"] }
-      - { action: allow, argv: [git, diff, "*"] }
-      - { action: allow, argv: [git, log, "*"] }
+      - { action: ask, argv: [git, diff, "*"] }
+      - { action: ask, argv: [git, log, "*"] }
       - { action: deny, argv: [git, push, "*"] }
       - { action: allow, argv: [cargo, check, "*"] }
       - { action: allow, argv: [cargo, test, "*"] }
