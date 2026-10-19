@@ -16,7 +16,7 @@
 #   --version          print the installer version
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 REPO="${PT35_REPO:-therezor/PocketTerm35-OS}"
 SHARE=/usr/share/pt35-desktop
 DRY=0; UNINSTALL=0; FROM_SOURCE=0; FLASH_KEYBOARD=0; TARGET_USER=""
@@ -149,7 +149,11 @@ install_from_release() {
   msg "verifying checksum"
   run "(cd '$tmp' && grep 'pt35-desktop_arm64.deb' SHA256SUMS | sha256sum -c -)" \
     || die "the downloaded package does not match SHA256SUMS"
-  run "PT35_USER='$TARGET_USER' DEBIAN_FRONTEND=noninteractive apt-get install -y '$deb'"
+  # A config file the package ships may already be there, edited or put there
+  # by a source install. dpkg would stop to ask, and with no terminal it fails
+  # halfway. Keep the one on disk; the package's lands beside it as .dpkg-dist.
+  run "PT35_USER='$TARGET_USER' DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold '$deb'"
 }
 
 # No release to download: fetch the source and build it here instead, so the
@@ -339,7 +343,7 @@ EOF
   [ "$AI" = yes ] || ! command -v pt35-ai >/dev/null || cat <<EOF
   Local AI agent:       sudo pt35-ai setup   (see: pt35-ai models)
 EOF
-  [ "$FLASH_KEYBOARD" = 1 ] || cat <<EOF
+  [ "$FLASH_KEYBOARD" = 1 ] || keyboard_patched || cat <<EOF
 
   A B X Y L R still send the letters a b x y l r, the same keycodes the keyboard
   sends, so the shell cannot use them as buttons. To change that:
@@ -349,6 +353,17 @@ EOF
   See $SHARE/firmware/README.md.
 EOF
   echo
+}
+
+# Whether the keyboard already runs the pt35 firmware. A running pt35d knows.
+# Asking the keyboard from here could stall: stock firmware never reads its
+# console.
+keyboard_patched() {
+  local uid
+  uid=$(id -u "$TARGET_USER" 2>/dev/null) || return 1
+  [ -S "/run/user/$uid/pt35.sock" ] || return 1
+  runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+    pt35ctl status --json 2>/dev/null | grep -q '"pt35_firmware":true'
 }
 
 # prerm undoes postinst: the boot config, greetd and the drop-ins. The copy
