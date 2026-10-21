@@ -46,6 +46,11 @@ Captured from the board, not guessed. See `docs/hardware-facts.md`.
   it three times per plug-in, and again when `pt35-kbd` touches
   `/run/pt35-kbd.flashed`. The pt35 firmware is asked every 10s, which keeps
   the level right after Fn `-` / `=`. Every request is non-blocking and bounded.
+- The board sends a title escape with an emoji on every open of its console,
+  and a new tty echoes until it is set raw. `pt35d` sets it raw in-process
+  right after `open`, never through `stty`: the echoed title is not UTF-8,
+  and the pt35 firmware up to 0.4.1 died on it. The firmware reads its
+  console as bytes.
 - Network: `eth0` (the Pi's RJ45) and `wlan0`, both NetworkManager. A cable
   with link wins: `Status::ethernet` is set, the bar shows the wired icon, and
   the quick panel and Network screen gain an Ethernet row. No cable, no row.

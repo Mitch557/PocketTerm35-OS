@@ -73,6 +73,9 @@ class Keyboard:
                 break
         self.serial.write(b"\x01")
         if b"raw REPL" not in self._drain():
+            # Ctrl-C may have stopped code.py: start it again, or the keyboard
+            # stays dead until the next power cycle.
+            self.serial.write(b"\x02\x04")
             raise SystemExit("the keyboard did not answer on its serial port")
         return self
 

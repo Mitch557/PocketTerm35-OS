@@ -12,6 +12,7 @@ import time
 import pwmio
 import supervisor
 import sys
+import usb_cdc
 # from typing import Optional, Set, List, Tuple, Dict, Callable, Any
 
 
@@ -743,13 +744,17 @@ class KeyboardController:
 
     def _poll_host(self):
         # Only what has already arrived: the scan loop must never wait on it.
-        while supervisor.runtime.serial_bytes_available:
-            ch = sys.stdin.read(1)
-            if ch in "\r\n":
+        # Bytes, not sys.stdin: a byte that is not UTF-8 makes text input
+        # raise. A tty that echoes our title back sends exactly that.
+        waiting = usb_cdc.console.in_waiting
+        if not waiting:
+            return
+        for byte in usb_cdc.console.read(waiting):
+            if byte in (10, 13):
                 self._host_command(self._host_line)
                 self._host_line = ""
             elif len(self._host_line) < 16:
-                self._host_line += ch
+                self._host_line += chr(byte)
 
     def run(self):
         """主循环"""
@@ -758,8 +763,14 @@ class KeyboardController:
         self._host_line = ""
         
         while True:
-            self.processor.process()
-            self._poll_host()
+            # pt35-desktop: an error that ends code.py leaves the keyboard
+            # dead until the next power cycle. A busy USB is one.
+            try:
+                self.processor.process()
+                self._poll_host()
+            except Exception as e:
+                Logger.error(f"[System] {e}")
+                self._host_line = ""
             time.sleep(Config.SCAN_INTERVAL)
 
 

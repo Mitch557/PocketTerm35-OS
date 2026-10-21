@@ -8,7 +8,6 @@
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -99,15 +98,11 @@ fn ask(path: &Path, command: &str) -> Answer {
         return Answer::Busy;
     }
     // Raw and no echo, set every time: `pt35-kbd` leaves its own settings
-    // behind. No hang-up on close: every request opens the port anew.
-    let configured = Command::new("stty")
-        .args(["-F", &path.to_string_lossy(), "raw", "-echo", "-hupcl"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !configured {
+    // behind. Set here and not by `stty`: the board sends a title on every
+    // open, and a new tty echoes it back until the echo is off. The pt35
+    // firmware up to 0.4.1 died on that echo. No hang-up on close: every
+    // request opens the port anew.
+    if !make_raw(&port) {
         return Answer::Silent;
     }
     let mut answer = Answer::Silent;
@@ -148,9 +143,54 @@ const TCOFLUSH: i32 = 1;
 #[cfg(not(target_os = "linux"))]
 const TCOFLUSH: i32 = 2;
 
+#[cfg(target_os = "linux")]
+type TcFlag = u32;
+#[cfg(not(target_os = "linux"))]
+type TcFlag = u64;
+
+#[cfg(target_os = "linux")]
+const HUPCL: TcFlag = 0o2000;
+#[cfg(not(target_os = "linux"))]
+const HUPCL: TcFlag = 0x4000;
+
+/// `struct termios` up to `c_cflag`, with room for the rest of it.
+#[repr(C)]
+struct Termios {
+    iflag: TcFlag,
+    oflag: TcFlag,
+    cflag: TcFlag,
+    lflag: TcFlag,
+    rest: [u8; 64],
+}
+
 extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
     fn tcflush(fd: i32, queue: i32) -> i32;
+    fn tcgetattr(fd: i32, termios: *mut Termios) -> i32;
+    fn tcsetattr(fd: i32, when: i32, termios: *const Termios) -> i32;
+    fn cfmakeraw(termios: *mut Termios);
+}
+
+/// `stty raw -echo -hupcl` on an open port.
+fn make_raw(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    const TCSANOW: i32 = 0;
+    let mut termios = Termios {
+        iflag: 0,
+        oflag: 0,
+        cflag: 0,
+        lflag: 0,
+        rest: [0; 64],
+    };
+    // SAFETY: a valid open fd, and a buffer larger than `struct termios`.
+    unsafe {
+        if tcgetattr(file.as_raw_fd(), &mut termios) != 0 {
+            return false;
+        }
+        cfmakeraw(&mut termios);
+        termios.cflag &= !HUPCL;
+        tcsetattr(file.as_raw_fd(), TCSANOW, &termios) == 0
+    }
 }
 
 /// An exclusive, non-blocking flock, released when the file closes.
