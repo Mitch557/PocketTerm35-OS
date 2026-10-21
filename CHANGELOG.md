@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (2026-10-21)
 
 After upgrading, reflash the keyboard with `sudo pt35-kbd flash`.
 
