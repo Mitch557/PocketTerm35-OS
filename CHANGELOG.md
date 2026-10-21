@@ -6,16 +6,18 @@ After upgrading, reflash the keyboard with `sudo pt35-kbd flash`.
 
 ### Fixed
 
-- The keyboard works after a boot again. Since 0.4.0, pt35d opened the
-  keyboard's console and only then turned the echo off, through `stty`. In
-  that gap the console sent the firmware's own title back to it, mangled, and
-  the pt35 firmware stopped on those bytes. Every key was dead until the next
-  power cycle. pt35d now turns the echo off itself, right after the open, and
-  the firmware reads bytes it cannot decode without stopping.
-- The firmware keeps scanning after an error, such as a busy USB, instead of
-  stopping for good.
-- `pt35-kbd` starts the keymap again when the keyboard does not answer it,
-  instead of leaving the keyboard stopped.
+- The keyboard works after a boot again. The keyboard sends a terminal title
+  each time its console opens. Since 0.4.0, pt35d opened the console and only
+  then ran `stty` to turn the echo off. In that gap, Linux echoed the title
+  back to the keyboard with its emoji mangled into bytes that are not UTF-8.
+  The pt35 firmware failed to read them and stopped, and every key was dead
+  until the next power cycle. pt35d now turns the echo off itself, right
+  after it opens the port. The firmware reads its console as raw bytes, so a
+  bad byte no longer stops it.
+- The firmware keeps reading keys after an error, such as a busy USB link.
+  Before, any error stopped it until the next power cycle.
+- `pt35-kbd` now restarts the keyboard firmware when the keyboard does not
+  answer it. Before, it left the keyboard stopped.
 
 ## 0.4.1 (2026-10-19)
 
