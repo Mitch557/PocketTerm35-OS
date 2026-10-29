@@ -107,7 +107,7 @@ const NAV_HINTS: &[Hint] = &[
 
 const WINDOW_HINTS: &[Hint] = &[
     Hint {
-        button: "<>",
+        button: "←→",
         action: "Move",
     },
     Hint {
@@ -151,7 +151,7 @@ const MOUSE_HINTS: &[Hint] = &[
 
 const QUICK_HINTS: &[Hint] = &[
     Hint {
-        button: "<>",
+        button: "←→",
         action: "Adjust",
     },
     Hint {
@@ -600,7 +600,7 @@ impl Menu {
         let key = match button {
             // In Mouse mode B is the right button, and its pill says Options.
             "B" if self.mouse_mode() => return self.options_here(),
-            "<>" => Key::new(pt35_ui::keys::sym::RIGHT),
+            "←→" => Key::new(pt35_ui::keys::sym::RIGHT),
             "Bksp" => Key::new(pt35_ui::keys::sym::BACKSPACE),
             "^v" => Key::new(pt35_ui::keys::sym::DOWN),
             // The button's own keysym, not its letter: with the pt35
