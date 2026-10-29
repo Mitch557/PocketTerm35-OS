@@ -19,6 +19,7 @@ mod recents;
 mod server;
 mod state;
 mod vkbd;
+mod workspaces;
 
 /// How often the sampled hardware is re-read. 2 s is invisible on a clock that
 /// shows minutes and costs a few sysfs reads.

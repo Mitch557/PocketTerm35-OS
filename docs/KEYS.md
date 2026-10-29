@@ -40,7 +40,8 @@ motion while a button is down. A real mouse or a finger can drag.
 | Start, Escape | close the menu |
 
 On the window switcher: left and right move, A switches, B goes back to your
-app, Y and L close one window, X closes all of them (it asks first).
+app, Y and L close one window, X closes all of them (it asks first). With
+dynamic workspaces, `,` and `.` move the window one place left or right.
 
 The launcher never closes from inside. You leave it by picking an app or a
 window, or with Start. With no window open, the menu is the desktop and stays.
@@ -92,6 +93,18 @@ taskbar for a couple of seconds: "Saved shot.png", "no audio".
 
 There is no tiling. One window owns the screen, and each app gets a workspace
 of its own.
+
+## Workspaces
+
+`[apps] workspaces` in `theme.toml` picks how apps get one.
+
+- `fixed`, the default: each app opens on the workspace `apps.toml` gives it.
+  Super + 2 is always Files.
+- `dynamic`: apps line up on 1, 2, 3 in the order they open, and a new one goes
+  on the end. Close one and the rest shift down, and you land on the
+  launcher. Reorder them on the window switcher with `,` and `.`.
+
+Switching takes effect after a sway reload (Super + Shift + c).
 
 ## Keyboard firmware
 

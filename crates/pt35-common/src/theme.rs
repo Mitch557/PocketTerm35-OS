@@ -24,6 +24,8 @@ pub struct Apps {
     /// GTK theme for each scheme. Qt follows GTK through its platform theme.
     pub gtk_dark: String,
     pub gtk_light: String,
+    /// How apps get their workspaces.
+    pub workspaces: WorkspaceMode,
 }
 
 impl Default for Apps {
@@ -32,8 +34,20 @@ impl Default for Apps {
             color_scheme: ColorScheme::Dark,
             gtk_dark: "Adwaita-dark".into(),
             gtk_light: "Adwaita".into(),
+            workspaces: WorkspaceMode::Fixed,
         }
     }
+}
+
+/// `fixed`: an app opens on the workspace its apps.toml profile names.
+/// `dynamic`: apps line up on 1..n in the order they opened, and the window
+/// switcher reorders them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceMode {
+    #[default]
+    Fixed,
+    Dynamic,
 }
 
 /// `keep` leaves the desktop settings alone, for a user who sets them by hand.
