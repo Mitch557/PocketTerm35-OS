@@ -160,7 +160,7 @@ impl Sway {
         Ok(focused
             .and_then(|w| w["num"].as_i64())
             .unwrap_or(1)
-            .clamp(0, 9) as u8)
+            .clamp(0, i64::from(u8::MAX)) as u8)
     }
 }
 
@@ -189,7 +189,10 @@ pub fn windows(node: &serde_json::Value) -> Vec<Window> {
             return;
         }
         let workspace = if kind == "workspace" {
-            node["num"].as_i64().unwrap_or(0).clamp(0, 9) as u8
+            node["num"]
+                .as_i64()
+                .unwrap_or(0)
+                .clamp(0, i64::from(u8::MAX)) as u8
         } else {
             workspace
         };

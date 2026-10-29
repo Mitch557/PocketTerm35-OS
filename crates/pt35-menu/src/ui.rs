@@ -2282,6 +2282,29 @@ impl App for Menu {
             }
             _ => {}
         }
+        // , and . are the keys under < and >: they move the card under the
+        // cursor one place. pt35d says no unless workspaces are dynamic.
+        if self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Windows) {
+            let side = match key.text {
+                Some(',' | '<') => Some("left"),
+                Some('.' | '>') => Some("right"),
+                _ => None,
+            };
+            if let Some(side) = side {
+                let id = self
+                    .model
+                    .selected_payload()
+                    .and_then(|p| p.strip_prefix("con:"))
+                    .map(str::to_string);
+                if let Some(id) = id {
+                    if let Err(message) = self.ctl(&["window", side, &id]) {
+                        self.error = Some(message);
+                    }
+                    self.resync();
+                }
+                return true;
+            }
+        }
         if self.on_launcher() {
             let mode = self.model.screen().list.mode();
             match (self.side, navigate(&key, mode)) {

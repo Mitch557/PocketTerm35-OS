@@ -74,6 +74,10 @@ pub struct Session {
     closing: Vec<(i64, std::time::Instant)>,
     /// The `assign` and `for_window` rules sway holds.
     sent_rules: Vec<String>,
+    /// Dynamic workspaces: tiled windows, first to last.
+    order: Vec<i64>,
+    /// False until the first arrangement, when every window counts as new.
+    order_settled: bool,
 }
 
 /// How long a launch suppresses the empty-desktop menu. Long enough for a slow
@@ -143,6 +147,8 @@ impl Session {
             launch_pending: Some(std::time::Instant::now()),
             closing: Vec::new(),
             sent_rules: Vec::new(),
+            order: Vec::new(),
+            order_settled: false,
         };
         if let Err(e) = session.menu.validate() {
             log::error!("menu.toml is inconsistent ({e}); the menu key will show an error page");
@@ -381,6 +387,11 @@ impl Session {
     /// focus has moved on and lands on the wrong workspace. An assign rule is
     /// evaluated when the window appears, so timing stops mattering.
     fn apply_assignments(&mut self) {
+        // Dynamic workspaces place windows themselves. sway cannot take an
+        // assign back, so leaving fixed mode needs a sway reload.
+        if self.dynamic() {
+            return;
+        }
         let rules: Vec<String> = self
             .apps
             .apps
@@ -546,11 +557,20 @@ impl Session {
     /// Deliberately free of hardware reads: an event can arrive many times a
     /// second and `audio::state` spawns a subprocess.
     pub fn refresh_windows(&mut self) {
-        let tree = self.tree();
+        let mut tree = self.tree();
+        if self.dynamic() {
+            if let Some(arranged) = tree.as_ref().map(|t| self.arrange_workspaces(t)) {
+                if arranged {
+                    tree = self.tree();
+                }
+            }
+        }
         if let Some(tree) = &tree {
             self.status.windows = self.windows_in(tree);
         }
-        self.spread_windows();
+        if !self.dynamic() {
+            self.spread_windows();
+        }
         match self.sway().and_then(|s| s.focused_workspace()) {
             Ok(workspace) => {
                 self.status.workspace = workspace;
@@ -628,6 +648,52 @@ impl Session {
                 w.workspace = workspace;
             }
         }
+    }
+
+    fn dynamic(&self) -> bool {
+        self.theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic
+    }
+
+    /// Dynamic workspaces: put tiled window `i` on workspace `i + 1` and move
+    /// focus to match. True when sway was told to change anything.
+    fn arrange_workspaces(&mut self, tree: &serde_json::Value) -> bool {
+        use crate::workspaces::{focus_after, plan, Focus};
+        // The raw list: a window asked to close keeps its place until it goes.
+        let windows = pt35_common::sway::windows(tree);
+        let Ok(workspace) = self.sway().and_then(|s| s.focused_workspace()) else {
+            return false;
+        };
+        let front = windows
+            .iter()
+            .find(|w| w.workspace == workspace && !w.floating)
+            .map(|w| w.id);
+        let plan = plan(&self.order, &windows);
+        let focus = focus_after(&plan, front, workspace, self.order_settled);
+        self.order_settled = true;
+        let mut commands: Vec<String> = plan
+            .moves
+            .iter()
+            .map(|(id, to)| format!("[con_id={id}] move container to workspace number {to}"))
+            .collect();
+        match focus {
+            Some(Focus::Window(id)) => commands.push(format!("[con_id={id}] focus")),
+            Some(Focus::Home(to)) => commands.push(format!("workspace number {to}")),
+            None => {}
+        }
+        self.order = plan.order;
+        if commands.is_empty() {
+            return false;
+        }
+        // One command list, so sway draws only the end result.
+        if let Err(e) = self.sway_command(&commands.join("; ")) {
+            log::warn!("arranging workspaces: {e}");
+        }
+        true
+    }
+
+    /// The empty workspace past the last app.
+    fn home_workspace(&self) -> u8 {
+        u8::try_from(self.order.len() + 1).unwrap_or(u8::MAX)
     }
 
     fn low_battery_hook(&mut self) {
@@ -854,6 +920,16 @@ impl Session {
                         self.close_window(target)?;
                     }
                     WindowAction::CloseId(id) => self.close_window(id)?,
+                    WindowAction::MoveLeft(id) | WindowAction::MoveRight(id) => {
+                        if !self.dynamic() {
+                            bail!("reordering needs dynamic workspaces");
+                        }
+                        self.refresh_windows();
+                        let left = matches!(action, WindowAction::MoveLeft(_));
+                        if crate::workspaces::shift(&mut self.order, id, left) {
+                            self.refresh_windows();
+                        }
+                    }
                     WindowAction::CloseAll => {
                         self.sync_windows();
                         let ids: Vec<i64> = self.status.windows.iter().map(|w| w.id).collect();
@@ -1092,8 +1168,9 @@ impl Session {
         // otherwise, because every app owns one. Closing one behind it from the
         // switcher must leave you where you are.
         let current = self.current_window().map(|w| w.id) == Some(id);
-        let next =
-            next_window(&self.status.windows, self.status.workspace, true).filter(|_| current);
+        // Dynamic workspaces land on the launcher instead.
+        let next = next_window(&self.status.windows, self.status.workspace, true)
+            .filter(|_| current && !self.dynamic());
         // A GTK app ignores a close while its menu bar is open, and Y opens it.
         // Only the focused window can have a menu open.
         if self.status.windows.iter().any(|w| w.id == id && w.focused) {
@@ -1102,6 +1179,11 @@ impl Session {
         self.sway_command(&format!("[con_id={id}] kill"))?;
         self.status.windows.retain(|w| w.id != id);
         self.closing.push((id, std::time::Instant::now()));
+        if current && self.dynamic() {
+            let home = self.home_workspace();
+            self.sway_command(&format!("workspace number {home}"))?;
+            self.status.workspace = home;
+        }
         if let Some(next) = next.filter(|next| *next != id) {
             let _ = self.sway_command(&format!("[con_id={next}] focus"));
             for window in &mut self.status.windows {
@@ -1322,7 +1404,10 @@ impl Session {
             }
         }
 
-        if app.workspace > 0 {
+        if self.dynamic() {
+            let end = self.home_workspace();
+            self.sway_command(&format!("workspace number {end}"))?;
+        } else if app.workspace > 0 {
             self.sway_command(&format!("workspace number {}", app.workspace))?;
         }
         if app.fullscreen {
@@ -1382,6 +1467,10 @@ impl Session {
             }
         }
 
+        if self.dynamic() {
+            let end = self.home_workspace();
+            self.sway_command(&format!("workspace number {end}"))?;
+        }
         reap(
             Command::new("sh")
                 .arg("-c")

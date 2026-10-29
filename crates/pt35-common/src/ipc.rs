@@ -172,6 +172,18 @@ impl Request {
                         .map_err(|_| format!("{id:?} is not a container id"))?,
                 ),
             },
+            ["window", side @ ("left" | "right"), id] => {
+                let id = id
+                    .parse()
+                    .map_err(|_| format!("{id:?} is not a container id"))?;
+                Request::Window {
+                    action: if *side == "left" {
+                        WindowAction::MoveLeft(id)
+                    } else {
+                        WindowAction::MoveRight(id)
+                    },
+                }
+            }
             ["window", "fullscreen"] => Request::Window {
                 action: WindowAction::Fullscreen,
             },
@@ -267,6 +279,10 @@ pub enum WindowAction {
     Focus(i64),
     /// Close one window by container id, whichever one has focus.
     CloseId(i64),
+    /// Swap one window with its neighbour in the workspace order. Dynamic
+    /// workspaces only.
+    MoveLeft(i64),
+    MoveRight(i64),
     /// Ask every window to close. Destructive, so nothing reaches this without
     /// a confirmation in front of it.
     CloseAll,
@@ -585,6 +601,19 @@ mod ctl_tests {
             }
         );
         assert!(Request::from_ctl(&["window", "focus", "nope"]).is_err());
+        assert_eq!(
+            Request::from_ctl(&["window", "left", "34"]).unwrap(),
+            Request::Window {
+                action: WindowAction::MoveLeft(34)
+            }
+        );
+        assert_eq!(
+            Request::from_ctl(&["window", "right", "34"]).unwrap(),
+            Request::Window {
+                action: WindowAction::MoveRight(34)
+            }
+        );
+        assert!(Request::from_ctl(&["window", "left"]).is_err());
         assert_eq!(
             Request::from_ctl(&["window", "close"]).unwrap(),
             Request::Window {
