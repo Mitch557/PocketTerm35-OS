@@ -104,7 +104,8 @@ of its own.
   on the end. Close one and the rest shift down, and you land on the
   launcher. Reorder them on the window switcher with `,` and `.`.
 
-To switch, run `pt35ctl reload`, then reload sway with Super + Shift + c.
+Switch in Settings > Appearance > Dynamic workspaces. Open apps move at once:
+to 1, 2, 3 for dynamic, or to their own workspaces for fixed.
 
 ## Keyboard firmware
 

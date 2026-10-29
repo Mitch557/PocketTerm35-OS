@@ -692,6 +692,60 @@ impl Session {
         true
     }
 
+    /// `[apps] workspaces` was switched. Start the new mode from the windows as
+    /// they are, rather than from an order kept from an earlier stint.
+    fn workspace_mode_changed(&mut self) {
+        self.order.clear();
+        self.order_settled = false;
+        if self.dynamic() {
+            // sway cannot take an assign back, and the fixed ones would send
+            // each app to its old workspace. A reload drops them, and pt35d
+            // puts its bindings back when it sees the reload event.
+            if let Err(e) = self.sway_command("reload") {
+                log::warn!("reloading sway for dynamic workspaces: {e}");
+            }
+        } else {
+            self.arrange_fixed();
+        }
+        self.refresh_windows();
+    }
+
+    /// Fixed workspaces: send each open app to the workspace its profile names,
+    /// and keep the window in front in front.
+    fn arrange_fixed(&mut self) {
+        let Some(tree) = self.tree() else {
+            return;
+        };
+        let windows = pt35_common::sway::windows(&tree);
+        let apps = &self.apps;
+        let moves = crate::workspaces::fixed_moves(&windows, |w| {
+            apps.apps
+                .values()
+                .find(|app| app.workspace > 0 && app.matches_app(&w.app))
+                .map(|app| app.workspace)
+        });
+        if moves.is_empty() {
+            return;
+        }
+        let Ok(workspace) = self.sway().and_then(|s| s.focused_workspace()) else {
+            return;
+        };
+        let front = windows
+            .iter()
+            .find(|w| w.workspace == workspace && !w.floating)
+            .map(|w| w.id);
+        let mut commands: Vec<String> = moves
+            .iter()
+            .map(|(id, to)| format!("[con_id={id}] move container to workspace number {to}"))
+            .collect();
+        if let Some(front) = front.filter(|id| moves.iter().any(|(m, _)| m == id)) {
+            commands.push(format!("[con_id={front}] focus"));
+        }
+        if let Err(e) = self.sway_command(&commands.join("; ")) {
+            log::warn!("arranging fixed workspaces: {e}");
+        }
+    }
+
     /// The empty workspace past the last app.
     fn home_workspace(&self) -> u8 {
         u8::try_from(self.order.len() + 1).unwrap_or(u8::MAX)
@@ -1002,6 +1056,7 @@ impl Session {
             }
 
             Request::Reload => {
+                let was_dynamic = self.dynamic();
                 self.theme = load_theme_or_default();
                 self.menu = load_or_default("pt35/menu.toml");
                 self.apps = load_or_default("pt35/apps.toml");
@@ -1012,6 +1067,9 @@ impl Session {
                 apply_color_scheme(&self.theme);
                 apply_animations(&self.theme);
                 apply_cursor(&self.theme.pointer);
+                if self.dynamic() != was_dynamic {
+                    self.workspace_mode_changed();
+                }
                 hooks::fire("reload", &[]);
                 self.notify("Config reloaded", 0);
                 Ok(Response::Ok)
