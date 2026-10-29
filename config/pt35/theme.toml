@@ -80,8 +80,8 @@ gtk_dark      = "Adwaita-dark"
 gtk_light     = "Adwaita"
 # fixed: each app opens on the workspace apps.toml gives it.
 # dynamic: apps line up in the order they open, and closing one shifts the
-# rest down. Reorder them with , and . in the window switcher. A change takes
-# effect after a sway reload (Super+Shift+c).
+# rest down. Reorder them with , and . in the window switcher. To switch, run
+# pt35ctl reload, then reload sway (Super+Shift+c).
 workspaces    = "fixed"
 
 # Papirus is packaged and readable at this size. Anything the theme does not
