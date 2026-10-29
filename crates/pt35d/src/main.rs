@@ -14,6 +14,7 @@ mod backlight;
 mod events;
 mod hardware;
 mod hooks;
+mod keyd;
 mod modes;
 mod placement;
 mod recents;

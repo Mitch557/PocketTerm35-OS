@@ -24,6 +24,17 @@ screen in about a second.
 Holding A and pressing the D-pad does not drag: sway holds back the cursor's
 motion while a button is down. A real mouse or a finger can drag.
 
+## Games
+
+An app profile with a `buttons` table (`apps.toml`) takes the face buttons
+while it is in front. Each sends the key the table names, so a game that reads
+the keyboard sees A, B and Start as its own keys. L no longer closes the
+window, and Start no longer opens the menu: `Super+Space` does. The D-pad is
+the arrows, and Mouse mode switches to Buttons mode.
+
+This needs the pt35 firmware and keyd. The session user must be in the `keyd`
+group, which the installer sets up.
+
 ## The menu
 
 | control | what it does |

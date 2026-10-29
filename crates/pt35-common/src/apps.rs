@@ -48,6 +48,31 @@ pub struct AppProfile {
     pub multiple: bool,
     /// Extra environment for the child process.
     pub env: BTreeMap<String, String>,
+    /// What each face button sends while the app is in front, for a game that
+    /// reads the keyboard: button name to keyd key name. Empty leaves the
+    /// buttons to the shell. Needs the pt35 firmware.
+    pub buttons: BTreeMap<String, String>,
+}
+
+/// The buttons a profile's `buttons` table can name, and the key the pt35
+/// firmware sends for each, by keyd's name. The D-pad is the arrows already.
+pub const FACE_BUTTONS: [(&str, &str); 8] = [
+    ("a", "f18"),
+    ("b", "f17"),
+    ("x", "f15"),
+    ("y", "f16"),
+    ("l", "f13"),
+    ("r", "f14"),
+    ("select", "f21"),
+    ("start", "f22"),
+];
+
+/// The key the pt35 firmware sends for a face button.
+pub fn button_key(button: &str) -> Option<&'static str> {
+    FACE_BUTTONS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(button))
+        .map(|(_, key)| *key)
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
@@ -71,6 +96,7 @@ impl Default for AppProfile {
             fullscreen: false,
             multiple: false,
             env: BTreeMap::new(),
+            buttons: BTreeMap::new(),
         }
     }
 }
@@ -175,6 +201,15 @@ impl AppProfile {
                  so pt35d cannot tell its windows apart",
                 self.workspace
             );
+        }
+        for (button, key) in &self.buttons {
+            if button_key(button).is_none() {
+                anyhow::bail!("app {id:?} has no button {button:?}");
+            }
+            // keyd reads a binding as `button = key`: one word, or it fails.
+            if key.is_empty() || key.contains(|c: char| c.is_whitespace() || c == '=') {
+                anyhow::bail!("app {id:?} button {button:?} sends {key:?}, not a key name");
+            }
         }
         Ok(())
     }
@@ -418,6 +453,28 @@ env = { FOO = "bar" }
             toml::from_str("[app.notes]\nexec = \"notes\"\nmatch = { title = \"Notes\" }\n")
                 .unwrap();
         fine.validate().unwrap();
+    }
+
+    #[test]
+    fn a_game_names_its_buttons() {
+        let table: AppTable = toml::from_str(
+            "[app.games]\nexec = \"retroarch\"\nbuttons = { a = \"x\", start = \"enter\" }\n",
+        )
+        .unwrap();
+        table.validate().unwrap();
+        assert_eq!(table.get("games").unwrap().buttons["start"], "enter");
+        assert_eq!(button_key("A"), Some("f18"));
+        assert_eq!(button_key("up"), None);
+    }
+
+    #[test]
+    fn a_button_that_is_not_there_is_refused() {
+        for buttons in ["{ z = \"x\" }", "{ a = \"x = y\" }", "{ a = \"\" }"] {
+            let table: AppTable =
+                toml::from_str(&format!("[app.g]\nexec = \"true\"\nbuttons = {buttons}\n"))
+                    .unwrap();
+            assert!(table.validate().is_err(), "{buttons}");
+        }
     }
 
     #[test]

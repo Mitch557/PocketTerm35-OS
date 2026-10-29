@@ -39,6 +39,9 @@ pub struct Session {
     mode_before_menu: InputMode,
     /// Exactly what is bound right now, so it can be taken back exactly.
     bound: Vec<crate::modes::Bind>,
+    /// What keyd was last told the face buttons send, for the app in front.
+    /// `None` until then, so a map a previous pt35d left behind is cleared.
+    keyd_binds: Option<Vec<String>>,
     /// swaylock, while it is up. It is a layer surface and not in the tree, so
     /// the desktop reads as empty under it.
     lock_proc: Option<Child>,
@@ -129,6 +132,7 @@ impl Session {
             mode_applied: false,
             mode_before_menu: InputMode::Buttons,
             bound: Vec::new(),
+            keyd_binds: None,
             lock_proc: None,
             wake_proc: None,
             last_preview: std::time::Instant::now(),
@@ -319,6 +323,48 @@ impl Session {
             self.status.switcher_hover = None;
             self.status.launcher_active = false;
             self.menu_page = None;
+        }
+        self.sync_game_buttons();
+    }
+
+    /// Hand the face buttons to the app in front when its profile names keys
+    /// for them, and take them back for the menu, the lock screen and every
+    /// other app. Only the pt35 firmware sends keys of their own to map.
+    fn sync_game_buttons(&mut self) {
+        let wanted = if self.menu_proc.is_some()
+            || self.lock_proc.is_some()
+            || self.serial_backlight.is_none()
+        {
+            Vec::new()
+        } else {
+            self.status
+                .windows
+                .iter()
+                .find(|w| w.focused)
+                .and_then(|w| self.apps.apps.values().find(|app| app.matches_app(&w.app)))
+                .map(|app| crate::keyd::bindings(&app.buttons))
+                .unwrap_or_default()
+        };
+        if self.keyd_binds.as_ref() == Some(&wanted) {
+            return;
+        }
+        let game = !wanted.is_empty();
+        let result = crate::keyd::apply(&wanted);
+        match &result {
+            Ok(()) if game => log::info!("face buttons to the app: {}", wanted.join(", ")),
+            Ok(()) => log::debug!("face buttons back to the shell"),
+            Err(e) if game => log::warn!("face buttons to the app: {e}"),
+            // No profile asks for keyd, so a missing keyd or group costs nothing.
+            Err(e) => log::debug!("face buttons back to the shell: {e}"),
+        }
+        // Kept on failure too: trying again on every window event fails the same.
+        self.keyd_binds = Some(wanted);
+        // The D-pad is the game's. In Mouse mode sway would take it for the
+        // cursor, and R, which switches back, now belongs to the game.
+        if game && result.is_ok() && self.status.input_mode == InputMode::Mouse {
+            if let Err(e) = self.set_mode(InputMode::Buttons) {
+                log::warn!("input mode for a game: {e}");
+            }
         }
     }
 
@@ -562,6 +608,7 @@ impl Session {
             Err(_) => self.sway = None,
         }
         self.open_menu_on_empty_desktop();
+        self.sync_game_buttons();
     }
 
     /// The sway tree, or `None` when sway did not answer.
@@ -1519,6 +1566,7 @@ impl Session {
                 match Command::new("swaylock").args(args).spawn() {
                     Ok(child) => {
                         self.lock_proc = Some(child);
+                        self.sync_game_buttons();
                         Ok(())
                     }
                     Err(_) => self.screen_off(),

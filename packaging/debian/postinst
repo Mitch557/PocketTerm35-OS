@@ -93,6 +93,9 @@ fi
 
 # dialout: the keyboard's serial port, for brightness and the firmware check.
 usermod -aG input,video,render,audio,dialout "$USER_NAME" 2>/dev/null || true
+# keyd: its socket, for an app profile's `buttons`. Apart, so a missing group
+# cannot cost the others.
+usermod -aG keyd "$USER_NAME" 2>/dev/null || true
 # The uinput rule applies at once, not at the next boot.
 modprobe uinput 2>/dev/null || true
 udevadm control --reload 2>/dev/null || true

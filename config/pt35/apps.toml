@@ -9,8 +9,12 @@
 # default) in the launcher, the dock and the window picker. `glyph` is what is
 # drawn instead when the theme has no such icon: one or two characters.
 #
-# The face buttons behave the same in every app (see docs/KEYS.md), so there is
-# nothing per-app to say about them.
+# The face buttons behave the same in every app (see docs/KEYS.md). A game that
+# reads the keyboard can take them instead: `buttons` maps a, b, x, y, l, r,
+# select and start to keyd key names while the app is in front. RetroArch's
+# default keys, for example:
+#   buttons = { a = "x", b = "z", x = "s", y = "a", l = "q", r = "w",
+#               select = "rightshift", start = "enter" }
 #
 # `exec` must be a command that is useful with no arguments. A viewer that opens
 # on nothing shows a blank screen, so images and video are pointed at a folder.

@@ -98,6 +98,13 @@ switcher and nothing elsewhere, because the window behind the menu is out of
 sight. `pt35d` binds Start and Select outside the modes, so no mode can lose
 them.
 
+An app profile's `buttons` table hands the face buttons to a game (`keyd.rs`):
+while it is in front and the menu is down, keyd turns each button into the
+key the table names. sway never sees the button's key, so the face buttons'
+bindings stay put. keyd releases a held key as the key it pressed, even across
+a change. A game switches Mouse mode to Buttons, as R would: in Mouse mode
+sway takes the D-pad. `$mod+space` is the way out, since Start is the game's.
+
 The menu is modal, for a stock unit where the letters are the buttons: nav mode
 (A opens, B back, X search, Y home) and filter mode. The D-pad sideways changes
 a quick setting and nothing else. Back is B, and from the top screen back means
