@@ -216,6 +216,9 @@ pub struct Menu {
     /// Where the switcher's strip is held while the pointer drives it. `None`
     /// off the switcher.
     strip_scroll: Option<i32>,
+    /// A reorder in progress on the switcher. The moved card holds the middle
+    /// while the strip glides, and its neighbour passes under it.
+    swap: Option<Swap>,
     /// The last thing that moved the selection was the pointer, not a key.
     pointer_driven: bool,
     /// The right-click menu, while it is up.
@@ -298,6 +301,14 @@ struct Motion {
 }
 
 const GLIDE: Duration = Duration::from_millis(90);
+
+/// The card a reorder swapped with the selected one, and which way.
+struct Swap {
+    neighbour: String,
+    /// Slots the selected card moved: -1 left, +1 right.
+    slots: i32,
+    at: std::time::Instant,
+}
 const ENTER: Duration = Duration::from_millis(120);
 /// How far a new screen rises as it settles.
 const ENTER_RISE: f32 = 12.0;
@@ -396,6 +407,7 @@ impl Menu {
             status,
             row_hits: Vec::new(),
             strip_scroll: None,
+            swap: None,
             pointer_driven: false,
             popup: None,
             crumb_hits: Vec::new(),
@@ -663,10 +675,25 @@ impl Menu {
             .and_then(|p| p.strip_prefix("con:"))
             .map(str::to_string);
         if let Some(id) = id {
+            let before = self.model.screen().list.cursor_index();
             if let Err(message) = self.ctl(&["window", side, &id]) {
                 self.error = Some(message);
             }
             self.resync();
+            let after = self.model.screen().list.cursor_index();
+            let neighbour = self
+                .model
+                .visible_rows()
+                .get(before)
+                .map(|row| row.payload.clone());
+            self.swap = match neighbour {
+                Some(neighbour) if after != before && self.theme.menu.animations => Some(Swap {
+                    neighbour,
+                    slots: after as i32 - before as i32,
+                    at: std::time::Instant::now(),
+                }),
+                _ => None,
+            };
         }
         true
     }
@@ -1646,8 +1673,34 @@ impl Menu {
         let name_size = theme.font.size_menu * 0.85;
         let note_size = theme.font.size_hint * 0.85;
         let radius = theme.menu.radius;
-        for (index, row) in rows.iter().enumerate() {
-            let x = pad + index as i32 * (card_w + gap) - scroll;
+        // During a reorder the moved card holds the middle and is drawn last,
+        // over the neighbour sliding under it to its new side.
+        let slot = card_w + gap;
+        let swap = self
+            .swap
+            .as_ref()
+            .filter(|swap| swap.at.elapsed() < GLIDE)
+            .map(|swap| {
+                let left = 1.0 - ease(swap.at.elapsed(), GLIDE);
+                (swap.neighbour.clone(), (swap.slots * slot) as f32 * left)
+            });
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        if swap.is_some() {
+            order.retain(|index| *index as i32 != cursor);
+            order.push(cursor as usize);
+        }
+        for index in order {
+            let Some(row) = rows.get(index) else {
+                continue;
+            };
+            let mut x = pad + index as i32 * slot - scroll;
+            if let Some((neighbour, offset)) = &swap {
+                if index as i32 == cursor {
+                    x = (width - card_w) / 2;
+                } else if row.payload == *neighbour {
+                    x += *offset as i32;
+                }
+            }
             if x + card_w < 0 || x > width {
                 continue;
             }
