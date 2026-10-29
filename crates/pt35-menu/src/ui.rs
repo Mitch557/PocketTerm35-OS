@@ -110,6 +110,11 @@ const WINDOW_HINTS: &[Hint] = &[
         button: "←→",
         action: "Move",
     },
+    // The , and . keys, under < and >. Dynamic workspaces only.
+    Hint {
+        button: "<>",
+        action: "Reorder",
+    },
     Hint {
         button: "A",
         action: "Focus",
@@ -174,7 +179,7 @@ const FILTER_HINTS: &[Hint] = &[
         action: "Open",
     },
     Hint {
-        button: "^v",
+        button: "↑↓",
         action: "Move",
     },
     Hint {
@@ -601,8 +606,9 @@ impl Menu {
             // In Mouse mode B is the right button, and its pill says Options.
             "B" if self.mouse_mode() => return self.options_here(),
             "←→" => Key::new(pt35_ui::keys::sym::RIGHT),
+            "<>" => return self.reorder("right"),
             "Bksp" => Key::new(pt35_ui::keys::sym::BACKSPACE),
-            "^v" => Key::new(pt35_ui::keys::sym::DOWN),
+            "↑↓" => Key::new(pt35_ui::keys::sym::DOWN),
             // The button's own keysym, not its letter: with the pt35
             // firmware a letter is only a letter.
             "A" => Key::new(pt35_ui::keys::sym::BUTTON_A),
@@ -647,6 +653,26 @@ impl Menu {
             Ok(_) => Ok(()),
             Err(message) => Err(message),
         }
+    }
+
+    /// Move the switcher card under the cursor one place, `left` or `right`.
+    fn reorder(&mut self, side: &str) -> bool {
+        let id = self
+            .model
+            .selected_payload()
+            .and_then(|p| p.strip_prefix("con:"))
+            .map(str::to_string);
+        if let Some(id) = id {
+            if let Err(message) = self.ctl(&["window", side, &id]) {
+                self.error = Some(message);
+            }
+            self.resync();
+        }
+        true
+    }
+
+    fn dynamic_workspaces(&self) -> bool {
+        self.theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic
     }
 
     /// Re-read the daemon and rebuild the current screen from it.
@@ -1988,6 +2014,7 @@ impl Menu {
         // The launcher is never closed from inside it, desktop or not.
         let pinned = self.is_desktop() || (rooted && self.model.launcher_is_root());
         let on_home_tile = self.model.selected_payload() == Some(providers::HOME);
+        let dynamic = self.dynamic_workspaces();
         let hints: Vec<Hint> = hints
             .iter()
             // At the top screen there is nowhere to go home to, and on the
@@ -1997,6 +2024,8 @@ impl Menu {
             // B as Back, that is. In Mouse mode it is the right button.
             .filter(|hint| !(pinned && hint.button == "B" && !mouse))
             .filter(|hint| !(on_switcher && on_home_tile && hint.action == "Close"))
+            // The Launcher card has no place in the order to change.
+            .filter(|hint| hint.button != "<>" || (dynamic && !on_home_tile))
             .map(|hint| {
                 if on_switcher && on_home_tile && hint.button == "A" {
                     Hint {
@@ -2291,18 +2320,7 @@ impl App for Menu {
                 _ => None,
             };
             if let Some(side) = side {
-                let id = self
-                    .model
-                    .selected_payload()
-                    .and_then(|p| p.strip_prefix("con:"))
-                    .map(str::to_string);
-                if let Some(id) = id {
-                    if let Err(message) = self.ctl(&["window", side, &id]) {
-                        self.error = Some(message);
-                    }
-                    self.resync();
-                }
-                return true;
+                return self.reorder(side);
             }
         }
         if self.on_launcher() {
