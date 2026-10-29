@@ -104,7 +104,7 @@ of its own.
   on the end. Close one and the rest shift down, and you land on the
   launcher. Reorder them on the window switcher with `,` and `.`.
 
-Switching takes effect after a sway reload (Super + Shift + c).
+To switch, run `pt35ctl reload`, then reload sway with Super + Shift + c.
 
 ## Keyboard firmware
 
