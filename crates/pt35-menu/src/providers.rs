@@ -1284,6 +1284,19 @@ fn appearance() -> Items {
         icon: "preferences-system-windows".into(),
         ..Item::default()
     });
+    // pt35d sees the change on the reload the pick sends, and reloads sway or
+    // moves the open apps home as the new mode needs.
+    let dynamic = theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic;
+    out.push(Item {
+        label: "Dynamic workspaces".into(),
+        payload: format!(
+            "theme:apps.workspaces={}",
+            if dynamic { "fixed" } else { "dynamic" }
+        ),
+        note: if dynamic { "on" } else { "off" }.into(),
+        icon: "view-grid".into(),
+        ..Item::default()
+    });
     let skull = theme.bar.menu_icon != "bars";
     out.push(Item {
         label: "Skull menu button".into(),

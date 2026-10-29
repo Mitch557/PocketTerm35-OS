@@ -1,4 +1,5 @@
-//! Dynamic workspaces, `[apps] workspaces = "dynamic"`.
+//! Dynamic workspaces, `[apps] workspaces = "dynamic"`, and the way back to
+//! fixed ones.
 //!
 //! Tiled windows sit on workspaces 1..n in the order they opened, with no gaps.
 //! A new one goes on the end. When one closes, the rest shift down. The window
@@ -64,19 +65,74 @@ pub fn plan(order: &[i64], windows: &[Window]) -> Plan {
             continue;
         };
         let target = slot(index);
-        if window.workspace == target {
+        if window.workspace != target {
+            moves.push((window.id, target));
+        }
+    }
+    Plan {
+        order: new_order,
+        moves: with_dialogs(windows, moves),
+        added,
+    }
+}
+
+/// Moves for going back to fixed workspaces. Each app's first window goes to
+/// the workspace its profile names. Every other window keeps its workspace if
+/// that is free, or takes the first free one.
+pub fn fixed_moves(windows: &[Window], home_of: impl Fn(&Window) -> Option<u8>) -> Vec<(i64, u8)> {
+    const SLOTS: std::ops::RangeInclusive<u8> = 1..=9;
+    let tiled: Vec<&Window> = windows.iter().filter(|w| tiles(w)).collect();
+    let mut taken: Vec<u8> = Vec::new();
+    let mut placed: Vec<i64> = Vec::new();
+    let mut moves = Vec::new();
+    for window in &tiled {
+        let Some(home) = home_of(window).filter(|n| SLOTS.contains(n)) else {
+            continue;
+        };
+        if taken.contains(&home) {
             continue;
         }
-        moves.push((window.id, target));
-        // Its dialogs go with it. A new window on a shared workspace leaves
-        // them with the app that was there first.
-        let alone = tiled
+        taken.push(home);
+        placed.push(window.id);
+        if window.workspace != home {
+            moves.push((window.id, home));
+        }
+    }
+    let mut homeless = Vec::new();
+    for window in tiled.iter().filter(|w| !placed.contains(&w.id)) {
+        if SLOTS.contains(&window.workspace) && !taken.contains(&window.workspace) {
+            taken.push(window.workspace);
+        } else {
+            homeless.push(window.id);
+        }
+    }
+    for id in homeless {
+        let Some(free) = SLOTS.clone().find(|n| !taken.contains(n)) else {
+            break;
+        };
+        taken.push(free);
+        moves.push((id, free));
+    }
+    with_dialogs(windows, moves)
+}
+
+/// Add each moved window's dialogs to the moves. Only for a window alone on its
+/// workspace: a window opened over another app leaves the dialogs with the app
+/// that was there first.
+fn with_dialogs(windows: &[Window], moves: Vec<(i64, u8)>) -> Vec<(i64, u8)> {
+    let mut out = Vec::new();
+    for (id, target) in moves {
+        out.push((id, target));
+        let Some(window) = windows.iter().find(|w| w.id == id) else {
+            continue;
+        };
+        let alone = windows
             .iter()
-            .filter(|w| w.workspace == window.workspace)
+            .filter(|w| tiles(w) && w.workspace == window.workspace)
             .count()
             == 1;
         if alone {
-            moves.extend(
+            out.extend(
                 windows
                     .iter()
                     .filter(|w| w.floating && w.workspace == window.workspace)
@@ -84,11 +140,7 @@ pub fn plan(order: &[i64], windows: &[Window]) -> Plan {
             );
         }
     }
-    Plan {
-        order: new_order,
-        moves,
-        added,
-    }
+    out
 }
 
 /// Where focus should go after `plan`, or `None` to leave it.
@@ -280,6 +332,49 @@ mod tests {
         assert!(!shift(&mut order, 11, false));
         assert!(!shift(&mut order, 99, false));
         assert_eq!(order, [10, 11]);
+    }
+
+    /// Profiles for the fixed tests: app10 owns 2, app11 owns 1.
+    fn home(w: &Window) -> Option<u8> {
+        match w.app.as_str() {
+            "app10" => Some(2),
+            "app11" => Some(1),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn going_fixed_sends_each_app_home() {
+        let windows = [tiled(10, 1), tiled(11, 2), tiled(12, 3)];
+        assert_eq!(fixed_moves(&windows, home), [(10, 2), (11, 1)]);
+    }
+
+    #[test]
+    fn going_fixed_moves_an_app_out_of_another_apps_slot() {
+        // 12 has no profile and sits on 2, which belongs to 10.
+        let windows = [tiled(12, 2), tiled(10, 5)];
+        assert_eq!(fixed_moves(&windows, home), [(10, 2), (12, 1)]);
+    }
+
+    #[test]
+    fn going_fixed_keeps_a_free_workspace_and_rescues_high_ones() {
+        let windows = [tiled(12, 4), tiled(13, 12), tiled(10, 2)];
+        assert_eq!(fixed_moves(&windows, home), [(13, 1)]);
+    }
+
+    #[test]
+    fn going_fixed_sends_only_an_apps_first_window_home() {
+        // A second window of app10, on 2 with the first.
+        let mut second = tiled(20, 3);
+        second.app = "app10".into();
+        let windows = [tiled(10, 2), second];
+        assert!(fixed_moves(&windows, home).is_empty());
+    }
+
+    #[test]
+    fn going_fixed_takes_the_dialogs_along() {
+        let windows = [tiled(10, 4), dialog(30, 4)];
+        assert_eq!(fixed_moves(&windows, home), [(10, 2), (30, 2)]);
     }
 
     #[test]
