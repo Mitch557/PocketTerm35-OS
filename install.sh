@@ -180,7 +180,7 @@ install_from_source() {
         pipewire pipewire-alsa pipewire-pulse wireplumber \
         xdg-desktop-portal-wlr wl-clipboard grim wtype \
         fonts-dejavu-core papirus-icon-theme i2c-tools evtest python3-serial htop \
-        qt5-gtk-platformtheme qt6-gtk-platformtheme fastfetch bibata-cursor-theme ncdu \
+        qt5-gtk-platformtheme qt6-gtk-platformtheme fastfetch bibata-cursor-theme ncdu udisks2 \
         build-essential pkg-config libxkbcommon-dev"
 
   # A login shell, so a rustup toolchain in ~/.cargo/bin wins over the older
@@ -198,6 +198,7 @@ install_from_source() {
   run "install -m755 '$src/scripts/pt35-session' /usr/bin/pt35-session"
   run "install -m755 '$src/scripts/pt35-kbd' /usr/bin/pt35-kbd"
   run "install -m755 '$src/scripts/pt35-quick' /usr/bin/pt35-quick"
+  run "install -m755 '$src/scripts/pt35-drive' /usr/bin/pt35-drive"
   run "install -m755 '$src/scripts/pt35-hello' /usr/bin/pt35-hello"
   run "install -m755 '$src/scripts/pt35-ai' /usr/bin/pt35-ai"
   run "install -m644 '$src/config/systemd/pt35-ai.service' /usr/lib/systemd/system/pt35-ai.service"
@@ -406,7 +407,7 @@ do_uninstall() {
   msg "removing pt35-desktop (installed from source)"
   if [ -d "$SHARE" ] || [ -d /usr/lib/pt35 ]; then undo_postinst; fi
   run "rm -f /usr/bin/pt35d /usr/bin/pt35ctl /usr/bin/pt35-bar /usr/bin/pt35-menu \
-        /usr/bin/pt35-session /usr/bin/pt35-kbd /usr/bin/pt35-quick /usr/bin/pt35-hello \
+        /usr/bin/pt35-session /usr/bin/pt35-kbd /usr/bin/pt35-quick /usr/bin/pt35-drive /usr/bin/pt35-hello \
         /usr/bin/pt35-ai /usr/lib/systemd/system/pt35-ai.service \
         /usr/share/icons/hicolor/scalable/apps/darkwire.svg \
         /etc/keyd/pocketterm35.conf \

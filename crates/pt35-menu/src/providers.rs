@@ -85,6 +85,7 @@ pub fn screen(builtin: Builtin) -> Screen {
         Builtin::Clock => ("Clock", Layout::List, None, clocks),
         Builtin::Animations => ("Animations", Layout::List, None, animation_speeds),
         Builtin::About => ("About", Layout::List, None, about),
+        Builtin::Drives => ("Drives", Layout::List, None, drives),
     };
     Screen {
         title,
@@ -1467,6 +1468,194 @@ pub fn parse_pick(pick: &str) -> Option<(&str, &str, toml::Value)> {
         },
     };
     Some((section, key, value))
+}
+
+// ----------------------------------------------------------------- drives
+
+fn drives() -> Items {
+    let Some(out) = run(
+        "lsblk",
+        &[
+            "--json",
+            "--list",
+            "-o",
+            "PATH,PKNAME,TRAN,RM,FSTYPE,LABEL,SIZE,MOUNTPOINT",
+        ],
+    ) else {
+        return vec![Item::new("lsblk did not answer", "")];
+    };
+    let dir = pt35_common::paths::drives_dir();
+    // A failure is news for a minute, not until the next reboot.
+    let state = |name: &str| {
+        let path = dir.join(name);
+        let age = std::fs::metadata(&path)
+            .ok()?
+            .modified()
+            .ok()?
+            .elapsed()
+            .ok()?;
+        if age > std::time::Duration::from_secs(60) {
+            return None;
+        }
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    parse_lsblk(&out, &state)
+}
+
+/// Filesystems on USB and SD disks, and on anything marked removable. The disk
+/// the system runs from is left out, wherever it is plugged in. `state` is what
+/// `pt35-drive` last said about a device, by kernel name.
+pub fn parse_lsblk(json: &str, state: &dyn Fn(&str) -> Option<String>) -> Items {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return vec![Item::new("lsblk said something unreadable", "")];
+    };
+    let empty = Vec::new();
+    let devices = value["blockdevices"].as_array().unwrap_or(&empty);
+    let text = |d: &serde_json::Value, key: &str| d[key].as_str().unwrap_or("").to_string();
+    let name = |d: &serde_json::Value| {
+        let path = text(d, "path");
+        path.rsplit('/').next().unwrap_or("").to_string()
+    };
+    let disk_of = |d: &serde_json::Value| match text(d, "pkname") {
+        parent if parent.is_empty() => name(d),
+        parent => parent,
+    };
+    let system: Vec<String> = devices
+        .iter()
+        .filter(|d| {
+            let at = text(d, "mountpoint");
+            at == "/" || at.starts_with("/boot")
+        })
+        .map(disk_of)
+        .collect();
+    let disk = |n: &str| devices.iter().find(|d| name(d) == n);
+    let mut out = Items::new();
+    for d in devices {
+        let path = text(d, "path");
+        let fstype = text(d, "fstype");
+        if fstype.is_empty()
+            || matches!(
+                fstype.as_str(),
+                "swap" | "crypto_LUKS" | "LVM2_member" | "linux_raid_member"
+            )
+            || system.contains(&disk_of(d))
+            // It goes into a shell line.
+            || !path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/_-".contains(c))
+        {
+            continue;
+        }
+        let parent = disk(&disk_of(d)).unwrap_or(d);
+        let tran = match text(d, "tran") {
+            t if t.is_empty() => text(parent, "tran"),
+            t => t,
+        };
+        let removable = [d, parent]
+            .iter()
+            .any(|x| x["rm"].as_bool() == Some(true) || x["rm"].as_str() == Some("1"));
+        if tran != "usb" && tran != "mmc" && !removable {
+            continue;
+        }
+        let mounted = !text(d, "mountpoint").is_empty();
+        let label = match text(d, "label") {
+            l if l.is_empty() => name(d),
+            l => l,
+        };
+        let sd = tran == "mmc";
+        out.push(Item {
+            label: format!("{label} ({})", text(d, "size")),
+            payload: format!("sh:pt35-drive toggle {path}"),
+            note: state(&name(d))
+                .unwrap_or_else(|| if mounted { "mounted" } else { "not mounted" }.into()),
+            glyph: if sd { "SD" } else { "U" }.into(),
+            icon: if sd {
+                "media-flash-sd-mmc"
+            } else {
+                "drive-removable-media-usb"
+            }
+            .into(),
+            active: mounted,
+            search: label,
+            ..Item::default()
+        });
+    }
+    if out.is_empty() {
+        out.push(Item {
+            label: "No USB drive or SD card".into(),
+            glyph: "-".into(),
+            icon: "drive-removable-media".into(),
+            ..Item::default()
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod drive_tests {
+    use super::*;
+
+    const LSBLK: &str = r#"{"blockdevices": [
+        {"path":"/dev/mmcblk0","pkname":null,"tran":"mmc","rm":false,"fstype":null,"label":null,"size":"29.7G","mountpoint":null},
+        {"path":"/dev/mmcblk0p1","pkname":"mmcblk0","tran":"mmc","rm":false,"fstype":"vfat","label":"EZ FLASH","size":"29.7G","mountpoint":null},
+        {"path":"/dev/sda","pkname":null,"tran":"usb","rm":true,"fstype":null,"label":null,"size":"14.9G","mountpoint":null},
+        {"path":"/dev/sda1","pkname":"sda","tran":null,"rm":true,"fstype":"exfat","label":null,"size":"14.9G","mountpoint":"/media/pi/1234-ABCD"},
+        {"path":"/dev/zram0","pkname":null,"tran":null,"rm":false,"fstype":"swap","label":"zram0","size":"2G","mountpoint":"[SWAP]"},
+        {"path":"/dev/nvme0n1","pkname":null,"tran":"nvme","rm":false,"fstype":null,"label":null,"size":"476.9G","mountpoint":null},
+        {"path":"/dev/nvme0n1p1","pkname":"nvme0n1","tran":"nvme","rm":false,"fstype":"vfat","label":"bootfs","size":"512M","mountpoint":"/boot/firmware"},
+        {"path":"/dev/nvme0n1p2","pkname":"nvme0n1","tran":"nvme","rm":false,"fstype":"ext4","label":"rootfs","size":"476.4G","mountpoint":"/"}
+    ]}"#;
+
+    fn nothing(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn lists_sd_and_usb_but_not_the_system_disk() {
+        let items = parse_lsblk(LSBLK, &nothing);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["EZ FLASH (29.7G)", "sda1 (14.9G)"]);
+        assert_eq!(items[0].payload, "sh:pt35-drive toggle /dev/mmcblk0p1");
+        assert_eq!(items[0].note, "not mounted");
+        assert!(!items[0].active);
+        assert_eq!(items[1].note, "mounted");
+        assert!(items[1].active);
+        assert_eq!(
+            items[1].glyph, "U",
+            "a partition takes its disk's transport"
+        );
+    }
+
+    #[test]
+    fn booting_from_an_sd_card_hides_it() {
+        let json = LSBLK
+            .replace(r#""mountpoint":"/"}"#, r#""mountpoint":"/srv"}"#)
+            .replace(
+                r#""label":"EZ FLASH","size":"29.7G","mountpoint":null"#,
+                r#""label":"EZ FLASH","size":"29.7G","mountpoint":"/""#,
+            );
+        let items = parse_lsblk(&json, &nothing);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "sda1 (14.9G)");
+    }
+
+    #[test]
+    fn what_pt35_drive_said_replaces_the_note() {
+        let busy = |n: &str| (n == "sda1").then(|| "in use: close what is open on it".to_string());
+        let items = parse_lsblk(LSBLK, &busy);
+        assert_eq!(items[1].note, "in use: close what is open on it");
+        assert_eq!(items[0].note, "not mounted");
+    }
+
+    #[test]
+    fn no_drives_is_one_row_that_does_nothing() {
+        let items = parse_lsblk(r#"{"blockdevices":[]}"#, &nothing);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].payload.is_empty());
+    }
 }
 
 /// English, because the parsers read it: "Powered: yes", "enabled". UTF-8,

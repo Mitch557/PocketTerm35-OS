@@ -135,6 +135,8 @@ pub enum Builtin {
     Clock,
     Animations,
     About,
+    /// USB drives and SD cards: A mounts or ejects.
+    Drives,
 }
 
 impl Builtin {
@@ -145,7 +147,7 @@ impl Builtin {
     }
 
     /// Every screen, for `from_name`. A new one goes here and in `name`.
-    pub const ALL: [Builtin; 17] = [
+    pub const ALL: [Builtin; 18] = [
         Builtin::Launcher,
         Builtin::Quick,
         Builtin::System,
@@ -163,6 +165,7 @@ impl Builtin {
         Builtin::Clock,
         Builtin::Animations,
         Builtin::About,
+        Builtin::Drives,
     ];
 
     /// The name menu.toml, `pt35ctl menu open` and a `screen:` row use.
@@ -185,6 +188,7 @@ impl Builtin {
             Builtin::Clock => "clock",
             Builtin::Animations => "animations",
             Builtin::About => "about",
+            Builtin::Drives => "drives",
         }
     }
 }
