@@ -4,25 +4,18 @@
 use crate::canvas::Canvas;
 use pt35_common::theme::Rgb;
 
-/// The menu button's skull: the terminal logo (`config/fastfetch/skull.txt`)
-/// read as half blocks, so the two are the same shape. 15x16.
+/// The menu button's mark: the Weyland-Yutani W, its three notches cut out
+/// with a one-pixel gap so they read in one colour. 19x8. Still called SKULL,
+/// so this stays a one-file change against upstream.
 pub const SKULL: &[&str] = &[
-    "....#######....",
-    "..###########..",
-    ".#############.",
-    "###############",
-    "###############",
-    "###...###...###",
-    "##....###....##",
-    "##....###....##",
-    "##....###....##",
-    "###..##.##..###",
-    "######...######",
-    ".#####...#####.",
-    "..###########..",
-    "...#.#.#.#.#...",
-    "...#.#.#.#.#...",
-    "...#########...",
+    "###.###.###.###.###",
+    ".###.#.#####.#.###.",
+    "..###..#####..###..",
+    "...###.##.##.###...",
+    "....#####.#####....",
+    "....####.#.####....",
+    "....###.###.###....",
+    "....##.#####.##....",
 ];
 
 /// The launcher's mark for a pinned app, 5x8.
@@ -114,16 +107,20 @@ mod tests {
 
     #[test]
     fn the_skull_is_a_rectangle_of_known_size() {
-        assert!(SKULL.iter().all(|row| row.len() == 15));
-        assert_eq!(size(SKULL, 1), (15, 16));
+        assert!(SKULL.iter().all(|row| row.len() == 19));
+        assert_eq!(size(SKULL, 1), (19, 8));
     }
 
     #[test]
     fn ink_lands_only_where_the_bitmap_says() {
-        let mut canvas = Canvas::new(15, 16);
+        let mut canvas = Canvas::new(19, 8);
         let ink = Rgb(0xff, 0xff, 0xff);
         draw(&mut canvas, SKULL, 0, 0, 1, ink);
-        assert_eq!(canvas.pixel(4, 0), ink.to_argb8888(), "top of the dome");
-        assert_ne!(canvas.pixel(4, 6), ink.to_argb8888(), "an eye is a hole");
+        assert_eq!(canvas.pixel(0, 0), ink.to_argb8888(), "top of the left arm");
+        assert_ne!(
+            canvas.pixel(3, 0),
+            ink.to_argb8888(),
+            "the gap round a notch"
+        );
     }
 }
