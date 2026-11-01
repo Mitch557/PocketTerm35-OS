@@ -1761,14 +1761,12 @@ impl Menu {
                     icon.draw(canvas, ix, iy);
                 }
             } else if row.icon == providers::SKULL_ICON {
-                pt35_ui::pixel::draw_centred(
-                    canvas,
-                    pt35_ui::pixel::SKULL,
-                    middle,
-                    icon_y,
-                    3,
-                    pt35_ui::pixel::SKULL_GOLD,
-                );
+                for (bitmap, ink) in [
+                    (pt35_ui::pixel::SKULL_BIG_GOLD, pt35_ui::pixel::SKULL_GOLD),
+                    (pt35_ui::pixel::SKULL_BIG_GREY, pt35_ui::pixel::SKULL_GREY),
+                ] {
+                    pt35_ui::pixel::draw_centred(canvas, bitmap, middle, icon_y, 3, ink);
+                }
             } else {
                 let name = self.icons.resolve(&[&row.icon], icon_size);
                 if let Some(icon) = name.and_then(|name| self.icons.get(&name, icon_size)) {
