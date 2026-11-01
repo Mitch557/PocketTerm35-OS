@@ -18,6 +18,9 @@ pub const SKULL: &[&str] = &[
     "....##.#####.##....",
 ];
 
+/// The W's gold, the same as the fastfetch logo's.
+pub const SKULL_GOLD: Rgb = Rgb(0xff, 0xcc, 0x00);
+
 /// The launcher's mark for a pinned app, 5x8.
 pub const PIN: &[&str] = &[
     ".###.", "#####", ".###.", ".###.", "#####", "..#..", "..#..", "..#..",

@@ -347,7 +347,14 @@ impl App for Bar {
                 canvas.rect(middle - 7, centre + row - 1, 14, 2, ink);
             }
         } else {
-            pt35_ui::pixel::draw_centred(canvas, pt35_ui::pixel::SKULL, middle, centre, 1, ink);
+            pt35_ui::pixel::draw_centred(
+                canvas,
+                pt35_ui::pixel::SKULL,
+                middle,
+                centre,
+                1,
+                pt35_ui::pixel::SKULL_GOLD,
+            );
         }
         x += 8;
 

@@ -1360,7 +1360,7 @@ impl Menu {
                     bx + badge / 2,
                     by + badge / 2,
                     2,
-                    theme.color.accent_fg,
+                    pt35_ui::pixel::SKULL_GOLD,
                 );
             } else if has_icon {
                 // The icon carries the colour, so the badge steps back to a
@@ -1767,7 +1767,7 @@ impl Menu {
                     middle,
                     icon_y,
                     3,
-                    theme.color.accent,
+                    pt35_ui::pixel::SKULL_GOLD,
                 );
             } else {
                 let name = self.icons.resolve(&[&row.icon], icon_size);
