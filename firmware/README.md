@@ -34,6 +34,13 @@ The backlight is a PWM pin on the RP2040. The patched firmware reads `B<0-100>`
 and `B?` on `/dev/ttyACM0` and answers `PT35 B=<n>`. `pt35d` uses it for the
 brightness slider, and to tell that this firmware is on.
 
+## Volume
+
+Stock, Fn+W, E and R mute and step an amp on GP18 inside the keyboard, and the
+host never hears about it. Here they send the standard Mute, Volume Down and
+Volume Up keys, so PipeWire holds the level and the bar shows it. The amp stays
+at its boot level.
+
 ## Flashing
 
 `boot.py` calls `storage.disable_usb_drive()`, so there is no CIRCUITPY drive.
