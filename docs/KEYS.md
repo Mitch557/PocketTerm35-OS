@@ -122,8 +122,10 @@ With the patched firmware, brightness is a slider in Quick settings and
 `pt35ctl brightness`. On stock it is Fn with `-` and `=`. Fn + C blanks the
 screen.
 
-The speaker gain is on the keyboard too: Fn and the volume keys. The volume in
-the bar and the menu is PipeWire's, a separate knob.
+With the patched firmware, Fn with `w`, `e` and `r` are Mute, Volume Down and
+Volume Up: PipeWire's volume, the one the bar shows. The speaker amp's gain sits
+under it, as how loud full volume is: Settings > Speaker amp, or `pt35ctl
+speaker 0-10`. On stock the Fn keys step the amp and the bar never hears of it.
 
 ## keyd
 

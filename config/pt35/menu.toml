@@ -18,7 +18,7 @@
 # (#rrggbb) and `note`.
 # `layout = "grid"` draws tiles, the default draws rows.
 #
-# `state = "mode" | "volume" | "brightness" | "network" | "scale"`
+# `state = "mode" | "volume" | "brightness" | "network" | "scale" | "speaker"`
 # draws that value at the end of the row, so a toggle says which way it is set.
 # `stay = true` keeps the menu open after the row runs, to watch it take effect.
 
@@ -34,6 +34,7 @@ title = "Settings"
 entries = [
   { label = "Network",      builtin = "wifi",   state = "network", icon = "network-wireless" },
   { label = "Bluetooth",    builtin = "bluetooth", icon = "bluetooth" },
+  { label = "Speaker amp",  goto = "speaker", state = "speaker", icon = "audio-speakers" },
   { label = "Appearance",   builtin = "appearance", icon = "preferences-desktop-appearance" },
   { label = "Bar",          builtin = "bar", icon = "focus-top-bar" },
   { label = "Menu",         builtin = "menu", icon = "application-menu" },
@@ -50,6 +51,24 @@ entries = [
   { label = "Powersave (battery)",   action = "cpu powersave", stay = true, icon = "power-profile-power-saver" },
   { label = "Balanced",              action = "cpu balanced", stay = true, icon = "power-profile-balanced" },
   { label = "Performance (27W PSU)", action = "cpu performance", stay = true, icon = "power-profile-performance" },
+]
+
+# How loud full volume is: the amp's gain on the keyboard. The volume keys
+# work under it.
+[menu.speaker]
+title = "Speaker amp"
+entries = [
+  { label = "10/10", action = "speaker 10", stay = true },
+  { label = "9/10", action = "speaker 9", stay = true },
+  { label = "8/10", action = "speaker 8", stay = true },
+  { label = "7/10", action = "speaker 7", stay = true },
+  { label = "6/10", action = "speaker 6", stay = true },
+  { label = "5/10", action = "speaker 5", stay = true },
+  { label = "4/10", action = "speaker 4", stay = true },
+  { label = "3/10", action = "speaker 3", stay = true },
+  { label = "2/10", action = "speaker 2", stay = true },
+  { label = "1/10", action = "speaker 1", stay = true },
+  { label = "0/10", action = "speaker 0", stay = true },
 ]
 
 [menu.power]

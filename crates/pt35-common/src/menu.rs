@@ -103,6 +103,7 @@ pub enum StateField {
     Brightness,
     Network,
     Scale,
+    Speaker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

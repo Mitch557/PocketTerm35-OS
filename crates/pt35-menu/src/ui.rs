@@ -1146,7 +1146,12 @@ impl Menu {
                 .as_ref()
                 .and_then(|s| s.cpu_profile)
                 .is_some_and(|p| row.payload == format!("action:cpu {}", p.label()));
-            if row.active || current_cpu {
+            let current_speaker = self
+                .status
+                .as_ref()
+                .and_then(|s| s.speaker_step)
+                .is_some_and(|step| row.payload == format!("action:speaker {step}"));
+            if row.active || current_cpu || current_speaker {
                 let tick = "\u{2713}";
                 let w = self.bold.measure(tick, size) as i32;
                 let colour = if selected { fg } else { theme.color.accent };

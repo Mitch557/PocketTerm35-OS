@@ -4,6 +4,9 @@
 //! listens on its USB console for `B<0-100>` and `B?` and answers
 //! `PT35 B=<percent>`. Stock firmware ignores the lines, the reply never
 //! comes, and brightness stays what it was: the Fn keys on the keyboard.
+//!
+//! The speaker amp's gain is on the same console: `A<0-10>` and `A?`, answered
+//! with `PT35 A=<step>`.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -15,6 +18,9 @@ pub struct SerialBacklight {
     pub path: PathBuf,
     /// The level the firmware last reported. `None` until it has answered.
     pub level: Option<u8>,
+    /// The speaker amp's step, 0-10. `None` until asked, and on firmware
+    /// from before the amp was a setting.
+    pub speaker: Option<u8>,
 }
 
 /// What asking the keyboard got.
@@ -54,7 +60,11 @@ impl SerialBacklight {
         let Some(path) = console() else {
             return (None, Answer::Silent);
         };
-        let mut backlight = Self { path, level: None };
+        let mut backlight = Self {
+            path,
+            level: None,
+            speaker: None,
+        };
         let answer = backlight.read();
         (backlight.level.is_some().then_some(backlight), answer)
     }
@@ -75,6 +85,22 @@ impl SerialBacklight {
         };
         self.level = Some(level);
         Some(level)
+    }
+
+    /// Ask for the speaker step. Only we change it, so once per keyboard.
+    pub fn read_speaker(&mut self) {
+        if let Answer::Level(step) = ask(&self.path, "A?") {
+            self.speaker = Some(step);
+        }
+    }
+
+    /// Set the speaker step; returns what the firmware says it is now.
+    pub fn set_speaker(&mut self, step: u8) -> Option<u8> {
+        let Answer::Level(step) = ask(&self.path, &format!("A{}", step.min(10))) else {
+            return None;
+        };
+        self.speaker = Some(step);
+        Some(step)
     }
 }
 
@@ -105,6 +131,8 @@ fn ask(path: &Path, command: &str) -> Answer {
     if !make_raw(&port) {
         return Answer::Silent;
     }
+    // `B?` is answered by `PT35 B=`, `A7` by `PT35 A=`.
+    let key = command.chars().next().unwrap_or('B');
     let mut answer = Answer::Silent;
     if port.write_all(format!("{command}\n").as_bytes()).is_ok() {
         let deadline = Instant::now() + Duration::from_millis(400);
@@ -114,7 +142,7 @@ fn ask(path: &Path, command: &str) -> Answer {
             match port.read(&mut chunk) {
                 Ok(n) if n > 0 => {
                     seen.extend_from_slice(&chunk[..n]);
-                    if let Some(level) = parse_reply(&String::from_utf8_lossy(&seen)) {
+                    if let Some(level) = parse_reply(&String::from_utf8_lossy(&seen), key) {
                         answer = Answer::Level(level);
                         break;
                     }
@@ -221,12 +249,13 @@ fn console() -> Option<PathBuf> {
     named.or_else(|| Some(PathBuf::from("/dev/ttyACM0")).filter(|p| p.exists()))
 }
 
-/// The last whole `PT35 B=<n>` line in what came back. The firmware prints
+/// The last whole `PT35 <key>=<n>` line in what came back. The firmware prints
 /// debug lines on the same port, and CircuitPython a title-bar escape with no
 /// newline the moment the port opens, so the reply is searched for, not read
 /// as a line. Its line end is what says the number is all there.
-pub fn parse_reply(text: &str) -> Option<u8> {
-    text.rmatch_indices("PT35 B=").find_map(|(at, tag)| {
+pub fn parse_reply(text: &str, key: char) -> Option<u8> {
+    let tag = format!("PT35 {key}=");
+    text.rmatch_indices(&tag).find_map(|(at, tag)| {
         let after = &text[at + tag.len()..];
         let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
         if digits == 0 || !after[digits..].starts_with(['\r', '\n']) {
@@ -242,21 +271,33 @@ mod tests {
 
     #[test]
     fn the_reply_is_found_among_debug_lines() {
-        assert_eq!(parse_reply("[HID] ready\r\nPT35 B=40\r\n"), Some(40));
+        assert_eq!(parse_reply("[HID] ready\r\nPT35 B=40\r\n", 'B'), Some(40));
         assert_eq!(
-            parse_reply("PT35 B=40\nPT35 B=55\n"),
+            parse_reply("PT35 B=40\nPT35 B=55\n", 'B'),
             Some(55),
             "the latest"
         );
-        assert_eq!(parse_reply("bl_pwm: 3000\n"), None);
+        assert_eq!(parse_reply("bl_pwm: 3000\n", 'B'), None);
         let opened = "\x1b]0;code.py | 10.0.0\x1b\\PT35 B=92\r\n";
-        assert_eq!(parse_reply(opened), Some(92), "after the title escape");
+        assert_eq!(parse_reply(opened, 'B'), Some(92), "after the title escape");
     }
 
     #[test]
     fn half_a_reply_is_not_one() {
-        assert_eq!(parse_reply("PT35 B=4"), None, "the 0 is still on its way");
-        assert_eq!(parse_reply("PT35 B=40\r\nPT35 B=5"), Some(40));
-        assert_eq!(parse_reply("PT35 B=\r\n"), None);
+        assert_eq!(
+            parse_reply("PT35 B=4", 'B'),
+            None,
+            "the 0 is still on its way"
+        );
+        assert_eq!(parse_reply("PT35 B=40\r\nPT35 B=5", 'B'), Some(40));
+        assert_eq!(parse_reply("PT35 B=\r\n", 'B'), None);
+    }
+
+    #[test]
+    fn each_command_reads_its_own_answer() {
+        let both = "PT35 A=7\r\nPT35 B=40\r\n";
+        assert_eq!(parse_reply(both, 'A'), Some(7));
+        assert_eq!(parse_reply(both, 'B'), Some(40));
+        assert_eq!(parse_reply("PT35 B=40\r\n", 'A'), None);
     }
 }

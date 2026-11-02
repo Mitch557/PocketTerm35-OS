@@ -18,6 +18,7 @@ usage:
   pt35ctl exec COMMAND...
   pt35ctl volume +5 | -5 | 50 | mute
   pt35ctl brightness +10 | -10 | 50
+  pt35ctl speaker 0-10
   pt35ctl mode [toggle|buttons|mouse]
   pt35ctl scale [1.0|0.75|cycle]
   pt35ctl window fit|close|next|prev|fullscreen
@@ -101,6 +102,12 @@ fn print_status(s: &Status) {
         s.brightness_percent
             .map(|p| format!("{p}%"))
             .unwrap_or_else(|| "not exposed by this hardware".into())
+    );
+    println!(
+        "speaker     {}",
+        s.speaker_step
+            .map(|step| format!("{step}/10"))
+            .unwrap_or_else(|| "not exposed by this firmware".into())
     );
     println!(
         "volume      {}{}",

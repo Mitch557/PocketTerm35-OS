@@ -574,7 +574,7 @@ class KeyboardController:
         self.pin_manager.add_digital_output("gp19", board.GP19, False)
         self.pin_manager.add_digital_output("gp21", board.GP21, False)
         self.pin_manager.add_pwm_output("bl_pwm", board.GP20, duty_cycle=5000)
-        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=32700)
+        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=self._saved_speaker_duty())
     
     def _setup_controllers(self):
         """设置功能控制器"""
@@ -591,7 +591,7 @@ class KeyboardController:
         """设置特殊功能映射"""
         self._special_functions = {
             # pt35-desktop: volume is the host's, so the shell can show the
-            # level. The amp on GP18 stays where boot put it.
+            # level. The amp on GP18 is a setting: `A<step>` below.
             CustomKeycodes.FN_MUTE: lambda: self._tap_consumer(ConsumerControlCode.MUTE),
             CustomKeycodes.FN_VOLUME_DOWN:
                 lambda: self._tap_consumer(ConsumerControlCode.VOLUME_DECREMENT),
@@ -748,8 +748,39 @@ class KeyboardController:
         duty = self.pin_manager.get_pwm_value("bl_pwm")
         return ((Config.PWM_MAX - duty) * 100 + Config.PWM_MAX // 2) // Config.PWM_MAX
 
+    # The speaker amp's gain on GP18, the ceiling under the host's volume.
+    # `A<0-10>` or `A?` answers `PT35 A=<step>`. The step is kept in NVM, so
+    # the amp comes back at it after a power cycle.
+    SPEAKER_STEPS = 10
+    NVM_SPEAKER = 0x41  # "A" at nvm[0] marks nvm[1] as a step we wrote.
+
+    def _speaker_duty(self, step):
+        return step * Config.PWM_MAX // self.SPEAKER_STEPS
+
+    def _speaker_step(self):
+        duty = self.pin_manager.get_pwm_value("ad_pwm")
+        return (duty * self.SPEAKER_STEPS + Config.PWM_MAX // 2) // Config.PWM_MAX
+
+    def _saved_speaker_duty(self):
+        nvm = getattr(microcontroller, "nvm", None)
+        if nvm is not None and nvm[0] == self.NVM_SPEAKER and nvm[1] <= self.SPEAKER_STEPS:
+            return self._speaker_duty(nvm[1])
+        return 32700
+
+    def _set_speaker(self, step):
+        self.pin_manager.set_pwm_value("ad_pwm", self._speaker_duty(step))
+        nvm = getattr(microcontroller, "nvm", None)
+        # Each write is a flash erase: skip one that changes nothing.
+        if nvm is not None and (nvm[0] != self.NVM_SPEAKER or nvm[1] != step):
+            nvm[0:2] = bytes((self.NVM_SPEAKER, step))
+
     def _host_command(self, line):
         line = line.strip()
+        if line == "A?" or (line.startswith("A") and line[1:].isdigit()):
+            if line != "A?":
+                self._set_speaker(min(self.SPEAKER_STEPS, int(line[1:])))
+            print("PT35 A=%d" % self._speaker_step())
+            return
         if line == "B?":
             pass
         elif line.startswith("B") and line[1:].isdigit():
