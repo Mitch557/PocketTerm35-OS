@@ -752,6 +752,12 @@ impl Session {
                 let (volume, muted) = audio::state(self.audio);
                 self.status.volume_percent = volume;
                 self.status.muted = muted;
+                // The bar icon has four steps, so show the exact level.
+                match (volume, muted) {
+                    (_, Some(true)) => self.notify("Muted", 0),
+                    (Some(level), _) => self.notify(format!("Volume {level}%"), 0),
+                    (None, _) => {}
+                }
                 Ok(Response::Ok)
             }
 
