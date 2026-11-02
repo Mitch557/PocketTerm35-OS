@@ -1466,6 +1466,8 @@ impl Session {
         if self.dynamic() {
             let end = self.home_workspace();
             self.sway_command(&format!("workspace number {end}"))?;
+            // As below: ensure_focus must not read the old workspace as current.
+            self.status.workspace = end;
         } else if app.workspace > 0 {
             self.sway_command(&format!("workspace number {}", app.workspace))?;
             // Before sway's event says so: a menu closing first would read the
@@ -1532,6 +1534,8 @@ impl Session {
         if self.dynamic() {
             let end = self.home_workspace();
             self.sway_command(&format!("workspace number {end}"))?;
+            // As in launch: ensure_focus must not read the old workspace as current.
+            self.status.workspace = end;
         }
         reap(
             Command::new("sh")
