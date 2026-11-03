@@ -693,13 +693,24 @@ impl Menu {
         if slide.sent == Some(level) {
             return false;
         }
+        let first = slide.sent.is_none();
         slide.sent = Some(level);
-        let name = match slide.adjust {
+        let adjust = slide.adjust;
+        let name = match adjust {
             pt35_common::menu::Adjust::Volume => "volume",
             pt35_common::menu::Adjust::Brightness => "brightness",
             pt35_common::menu::Adjust::Scale => return false,
         };
-        if let Err(message) = self.ctl(&[name, &level.to_string()]) {
+        let mut result = self.ctl(&[name, &level.to_string()]);
+        // Dragging the volume unmutes it, or the slider would stay at zero.
+        // Unmute after the new level is set, so the old level never plays.
+        if first && adjust == pt35_common::menu::Adjust::Volume && result.is_ok() {
+            let muted = crate::live::status().and_then(|s| s.muted);
+            if muted == Some(true) {
+                result = self.ctl(&["volume", "mute"]);
+            }
+        }
+        if let Err(message) = result {
             self.error = Some(message);
         }
         self.show_levels();
