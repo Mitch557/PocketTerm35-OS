@@ -125,6 +125,13 @@ pub trait App {
         self.hover(x, y)
     }
 
+    /// True while the finger holds something it drags, such as a slider or
+    /// a scrollbar. Asked after [`App::touch_down`]: then a pause before the
+    /// drag is not a long press.
+    fn holding(&self) -> bool {
+        false
+    }
+
     /// The finger moved past the tap slop and is now at `x`, `y`, by `dx`,
     /// `dy` since the last call. True to repaint.
     fn pan(&mut self, _x: f64, _y: f64, _dx: f64, _dy: f64) -> bool {
@@ -744,10 +751,14 @@ impl<A: App + 'static> TouchHandler for State<A> {
         }
         // A second finger does nothing: no multi-finger gestures.
         if self.finger.is_none() {
-            self.finger = Some(Finger::new(id, position, Instant::now()));
+            let mut finger = Finger::new(id, position, Instant::now());
             if self.app.touch_down(position.0, position.1) {
                 self.dirty = true;
             }
+            if self.app.holding() {
+                finger.no_long_press();
+            }
+            self.finger = Some(finger);
         }
     }
 

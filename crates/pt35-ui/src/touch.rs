@@ -28,6 +28,7 @@ pub struct Finger {
     last: (f64, f64),
     down: Instant,
     phase: Phase,
+    long_press: bool,
 }
 
 impl Finger {
@@ -38,6 +39,7 @@ impl Finger {
             last: at,
             down: now,
             phase: Phase::Held,
+            long_press: true,
         }
     }
 
@@ -76,7 +78,13 @@ impl Finger {
 
     /// When a long press is due, while the finger can still be one.
     pub fn long_press_at(&self) -> Option<Instant> {
-        (self.phase == Phase::Held).then(|| self.down + LONG_PRESS)
+        (self.phase == Phase::Held && self.long_press).then(|| self.down + LONG_PRESS)
+    }
+
+    /// The finger landed on something it drags, such as a slider. A pause
+    /// before the drag must not turn into a long press.
+    pub fn no_long_press(&mut self) {
+        self.long_press = false;
     }
 
     /// The long press fired: the rest of this touch does nothing.
@@ -123,5 +131,14 @@ mod tests {
         assert!(!f.is_tap());
         assert_eq!(f.moved((200.0, 200.0)), None);
         assert_eq!(f.long_press_at(), None);
+    }
+
+    #[test]
+    fn a_finger_on_a_slider_never_long_presses() {
+        let mut f = finger();
+        f.no_long_press();
+        assert_eq!(f.long_press_at(), None);
+        assert!(f.is_tap(), "it can still tap");
+        assert_eq!(f.moved((130.0, 100.0)), Some((30.0, 0.0)));
     }
 }

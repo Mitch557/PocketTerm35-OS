@@ -255,6 +255,19 @@ pub struct Menu {
     scrolling: bool,
     /// A finger's pan not yet worth a whole line, in pixels.
     pan: f64,
+    /// Each slider's track as drawn: left, top, right, bottom, row.
+    tracks: Vec<(i32, i32, i32, i32, usize)>,
+    /// The slider a finger is dragging, until it lifts.
+    sliding: Option<Slide>,
+}
+
+/// A slider held by a finger. The level follows the finger's x on the track.
+struct Slide {
+    adjust: pt35_common::menu::Adjust,
+    left: i32,
+    right: i32,
+    /// The last level sent, so a move inside one step sends nothing.
+    sent: Option<u32>,
 }
 
 /// One window's picture, as pt35d captured it.
@@ -423,6 +436,8 @@ impl Menu {
             cards_drawn: Vec::new(),
             scrolling: false,
             pan: 0.0,
+            tracks: Vec::new(),
+            sliding: None,
         }
     }
 
@@ -651,6 +666,46 @@ impl Menu {
         }
     }
 
+    /// Read the levels back after a change, so the slider shows it at once.
+    fn show_levels(&mut self) {
+        let quick = self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Quick);
+        match self.model.dynamic_items().filter(|_| quick) {
+            Some(items) => {
+                let mut items = items.to_vec();
+                self.status = crate::live::status();
+                if let Some(status) = &self.status {
+                    providers::patch_levels(&mut items, status);
+                }
+                self.model.replace_dynamic(items);
+            }
+            None => self.resync(),
+        }
+    }
+
+    /// Set the held slider to the level under `x`, in steps of 5%.
+    fn slide_to(&mut self, x: f64) -> bool {
+        let Some(slide) = self.sliding.as_mut() else {
+            return false;
+        };
+        let width = f64::from((slide.right - slide.left).max(1));
+        let fraction = ((x - f64::from(slide.left)) / width).clamp(0.0, 1.0);
+        let level = (fraction * 20.0).round() as u32 * 5;
+        if slide.sent == Some(level) {
+            return false;
+        }
+        slide.sent = Some(level);
+        let name = match slide.adjust {
+            pt35_common::menu::Adjust::Volume => "volume",
+            pt35_common::menu::Adjust::Brightness => "brightness",
+            pt35_common::menu::Adjust::Scale => return false,
+        };
+        if let Err(message) = self.ctl(&[name, &level.to_string()]) {
+            self.error = Some(message);
+        }
+        self.show_levels();
+        true
+    }
+
     /// Ask the daemon to do something and wait for the reply. Waiting is the
     /// point: the daemon has applied the change by the time it answers, so the
     /// value on screen can be re-read with no sleep.
@@ -760,18 +815,7 @@ impl Menu {
                 if let Err(message) = self.ctl(&args) {
                     self.error = Some(message);
                 }
-                let quick = self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Quick);
-                match self.model.dynamic_items().filter(|_| quick) {
-                    Some(items) => {
-                        let mut items = items.to_vec();
-                        self.status = crate::live::status();
-                        if let Some(status) = &self.status {
-                            providers::patch_levels(&mut items, status);
-                        }
-                        self.model.replace_dynamic(items);
-                    }
-                    None => self.resync(),
-                }
+                self.show_levels();
                 true
             }
             Step::RunStay(command) => {
@@ -1844,6 +1888,7 @@ impl Menu {
         let row_h = ((bottom - top - 8) / rows.len().max(1) as i32).min(56);
         let icon_size = 24;
         let readonly = self.readonly();
+        self.tracks.clear();
         if !readonly {
             let y = self.motion.glide(top + cursor as i32 * row_h);
             canvas.rect(0, y, canvas.width, row_h as u32, theme.color.background_alt);
@@ -1945,6 +1990,8 @@ impl Menu {
                     let track_x = label_x + 130;
                     let track_w = right - note_w - 12 - track_x;
                     canvas.rect(track_x, centre - 2, track_w as u32, 4, theme.color.border);
+                    self.tracks
+                        .push((track_x, y, track_x + track_w, y + row_h, index));
                     let filled = track_w * value.clamp(0, 100) / 100;
                     canvas.rect(track_x, centre - 2, filled as u32, 4, theme.color.accent);
                     canvas.rounded_rect(
@@ -2418,24 +2465,53 @@ impl App for Menu {
 
     fn touch_end(&mut self) {
         self.scrolling = false;
+        self.sliding = None;
     }
 
     /// The finger on the scrollbar takes it at once, as a click does. Anywhere
     /// else it only lights the row under it: the tap waits for the lift.
+    /// A finger on a slider's track holds that slider, so a drag moves it.
     fn touch_down(&mut self, x: f64, y: f64) -> bool {
         self.pan = 0.0;
+        self.sliding = None;
         if self.popup.is_none() && self.on_scrollbar(x as i32, y as i32) {
             self.scrolling = true;
             return self.scroll_to(y as i32);
         }
+        // The knob is 8 px wide and sits on the ends, so the target is wider.
+        let margin = 12;
+        let (xi, yi) = (x as i32, y as i32);
+        let track = self
+            .tracks
+            .iter()
+            .find(|(l, t, r, b, _)| xi >= l - margin && xi < r + margin && yi >= *t && yi < *b)
+            .copied();
+        if let Some((left, _, right, _, index)) = track.filter(|_| self.popup.is_none()) {
+            let item = self.model.screen().list.item_in_window(index);
+            if let Some(adjust) = item.and_then(|item| self.model.adjust_at(item)) {
+                self.sliding = Some(Slide {
+                    adjust,
+                    left,
+                    right,
+                    sent: None,
+                });
+            }
+        }
         self.hover(x, y)
+    }
+
+    fn holding(&self) -> bool {
+        self.scrolling || self.sliding.is_some()
     }
 
     /// A list follows the finger a line at a time. The window switcher's
     /// strip follows it a card at a time, so a swipe left brings the next one.
-    fn pan(&mut self, _x: f64, y: f64, dx: f64, dy: f64) -> bool {
+    fn pan(&mut self, x: f64, y: f64, dx: f64, dy: f64) -> bool {
         if self.scrolling {
             return self.scroll_to(y as i32);
+        }
+        if self.sliding.is_some() {
+            return self.slide_to(x);
         }
         if self.popup.is_some() {
             return false;

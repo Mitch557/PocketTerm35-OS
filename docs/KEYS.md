@@ -67,6 +67,7 @@ The menu works like any desktop, in either mode, with a plugged-in mouse too.
 | swipe on the window switcher | the next or previous card |
 | hold | the row's menu, like a right click |
 | scrollbar | tap to jump, drag to move |
+| slider (volume, brightness) | tap a side for a step, drag along the bar to set the level |
 
 A second finger does nothing.
 
