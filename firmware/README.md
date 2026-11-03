@@ -38,8 +38,8 @@ brightness slider, and to tell that this firmware is on.
 
 Stock, Fn+W, E and R mute and step an amp on GP18 inside the keyboard, and the
 host never hears about it. Here they send the standard Mute, Volume Down and
-Volume Up keys, so PipeWire holds the level and the bar shows it. The amp stays
-at its boot level.
+Volume Up keys, so PipeWire holds the level and the bar shows it. The amp runs at
+full, so the host's volume is the only level.
 
 ## Flashing
 

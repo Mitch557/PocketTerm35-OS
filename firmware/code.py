@@ -574,7 +574,8 @@ class KeyboardController:
         self.pin_manager.add_digital_output("gp19", board.GP19, False)
         self.pin_manager.add_digital_output("gp21", board.GP21, False)
         self.pin_manager.add_pwm_output("bl_pwm", board.GP20, duty_cycle=5000)
-        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=32700)
+        # pt35-desktop: the amp runs at full; the host's volume is the only level.
+        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=Config.PWM_MAX)
     
     def _setup_controllers(self):
         """设置功能控制器"""
@@ -591,7 +592,7 @@ class KeyboardController:
         """设置特殊功能映射"""
         self._special_functions = {
             # pt35-desktop: volume is the host's, so the shell can show the
-            # level. The amp on GP18 stays where boot put it.
+            # level. The amp on GP18 stays at full.
             CustomKeycodes.FN_MUTE: lambda: self._tap_consumer(ConsumerControlCode.MUTE),
             CustomKeycodes.FN_VOLUME_DOWN:
                 lambda: self._tap_consumer(ConsumerControlCode.VOLUME_DECREMENT),
