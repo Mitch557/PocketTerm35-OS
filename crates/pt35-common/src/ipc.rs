@@ -32,10 +32,6 @@ pub enum Request {
     Brightness {
         change: Delta,
     },
-    /// The speaker amp's step, 0-10: how loud full volume is.
-    Speaker {
-        step: u8,
-    },
     /// Switch between the two input modes.
     Mode {
         mode: ModeRequest,
@@ -129,14 +125,6 @@ impl Request {
             },
             ["brightness", value] => Request::Brightness {
                 change: value.parse::<Delta>()?,
-            },
-            ["speaker", value] => Request::Speaker {
-                // Digits only: u8 takes "+1", which reads as a step up.
-                step: Some(value)
-                    .filter(|v| v.bytes().all(|b| b.is_ascii_digit()))
-                    .and_then(|v| v.parse().ok())
-                    .filter(|step| *step <= 10)
-                    .ok_or_else(|| format!("bad speaker step {value:?}: want 0-10"))?,
             },
 
             ["mode"] | ["mode", "toggle"] => Request::Mode {
@@ -361,9 +349,6 @@ pub struct Status {
     pub battery_percent: Option<u8>,
     pub charging: Option<bool>,
     pub brightness_percent: Option<u8>,
-    /// The speaker amp's step, 0-10, from the pt35 firmware.
-    #[serde(default)]
-    pub speaker_step: Option<u8>,
     pub volume_percent: Option<u8>,
     pub muted: Option<bool>,
     /// The interface carrying traffic. A cable wins over Wi-Fi.
@@ -583,12 +568,6 @@ mod ctl_tests {
                 change: Delta::Relative(-10)
             }
         );
-        assert_eq!(
-            Request::from_ctl(&["speaker", "7"]).unwrap(),
-            Request::Speaker { step: 7 }
-        );
-        assert!(Request::from_ctl(&["speaker", "11"]).is_err());
-        assert!(Request::from_ctl(&["speaker", "+1"]).is_err());
         assert_eq!(
             Request::from_ctl(&["window", "fit"]).unwrap(),
             Request::WindowFit

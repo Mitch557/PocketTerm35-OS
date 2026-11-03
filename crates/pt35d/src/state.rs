@@ -55,8 +55,8 @@ pub struct Session {
     unanswered: u32,
     /// When `pt35-kbd` last changed the firmware, as its stamp file says.
     flashed: Option<std::time::SystemTime>,
-    /// Bumped on every brightness or speaker change, so a probe that read the
-    /// levels before one cannot put the old ones back after it.
+    /// Bumped on every brightness change, so a probe that read the level
+    /// before one cannot put the old level back after it.
     brightness_changes: u64,
     /// When the focused window was last captured for the switcher.
     last_preview: std::time::Instant,
@@ -251,7 +251,7 @@ impl Session {
         let changes = self.brightness_changes;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut probe = match known {
+            let probe = match known {
                 // A replug can bring it back as another ttyACM: look it up anew.
                 Some(mut backlight) if !replugged => {
                     let answer = backlight.read();
@@ -272,9 +272,6 @@ impl Session {
                     }
                 }
             };
-            if let Some(keyboard) = probe.backlight.as_mut().filter(|b| b.speaker.is_none()) {
-                keyboard.read_speaker();
-            }
             let _ = tx.send(probe);
         });
         self.backlight_probe = Some(rx);
@@ -490,7 +487,6 @@ impl Session {
             .hw
             .brightness_percent()
             .or_else(|| self.serial_backlight.as_ref().and_then(|b| b.level));
-        self.status.speaker_step = self.serial_backlight.as_ref().and_then(|b| b.speaker);
         self.status.pt35_firmware = self.serial_backlight.is_some();
         let (volume, muted) = audio::state(self.audio);
         self.status.volume_percent = volume;
@@ -791,24 +787,6 @@ impl Session {
                 self.status.brightness_percent = Some(level);
                 self.brightness_changes += 1;
                 self.notify(format!("Brightness {level}%"), 0);
-                Ok(Response::Ok)
-            }
-
-            Request::Speaker { step } => {
-                // Older pt35 firmware answers B but not A, and keeps the amp
-                // on Fn E and R as stock does.
-                let step = self
-                    .serial_backlight
-                    .as_mut()
-                    .and_then(|b| b.set_speaker(step))
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "the speaker amp is Fn E and R until the keyboard is reflashed"
-                        )
-                    })?;
-                self.status.speaker_step = Some(step);
-                self.brightness_changes += 1;
-                self.notify(format!("Speaker amp {step}/10"), 0);
                 Ok(Response::Ok)
             }
 

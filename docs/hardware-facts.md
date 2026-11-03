@@ -94,10 +94,6 @@ answers `PT35 B=<n>`, with a 5% floor. `pt35d` drives it, and the answer is also
 how the shell knows the patched firmware is on. Stock firmware never answers:
 brightness is then Fn with `-` and `=` only.
 
-The speaker amp's gain (GP18) is on the same console: `A<0-10>` and `A?`,
-answered by `PT35 A=<n>`. The firmware keeps the step in NVM. Stock steps it
-with Fn and `e` / `r`, and Fn and `w` toggles GP19.
-
 ### Battery
 There is no `/sys/class/power_supply` and no gauge on I²C. The bar shows no
 battery.

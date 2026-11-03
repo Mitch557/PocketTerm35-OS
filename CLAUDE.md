@@ -40,17 +40,12 @@ Captured from the board, not guessed. See `docs/hardware-facts.md`.
   pt35 firmware is on (`Status::pt35_firmware`): letters stop being buttons and
   the launcher searches as you type. Battery has no such path. Never show a
   gauge or a row that can only read `--`.
-- The speaker amp's gain (GP18) is a setting on the same console: `A<0-10>` /
-  `A?`, answered by `PT35 A=<n>` and kept in the RP2040's NVM. It is how loud
-  full volume is. The pt35 firmware's Fn `w` `e` `r` send Mute and the volume
-  keys, so PipeWire holds the volume and the bar shows it.
 - Nothing reads the keyboard's console between requests, so the firmware
-  prints only the `PT35 B=` and `PT35 A=` answers: a full buffer blocks
-  `print` and the scan loop with it. Stock firmware never reads its console
-  either, so `pt35d` asks it three times per plug-in, and again when
-  `pt35-kbd` touches `/run/pt35-kbd.flashed`. The pt35 firmware is asked every
-  10s, which keeps the level right after Fn `-` / `=`. Every request is
-  non-blocking and bounded.
+  prints only the `PT35 B=` answer: a full buffer blocks `print` and the scan
+  loop with it. Stock firmware never reads its console either, so `pt35d` asks
+  it three times per plug-in, and again when `pt35-kbd` touches
+  `/run/pt35-kbd.flashed`. The pt35 firmware is asked every 10s, which keeps
+  the level right after Fn `-` / `=`. Every request is non-blocking and bounded.
 - The board sends a title escape with an emoji on every open of its console,
   and a new tty echoes until it is set raw. `pt35d` sets it raw in-process
   right after `open`, never through `stty`: the echoed title is not UTF-8,

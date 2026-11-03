@@ -38,12 +38,8 @@ brightness slider, and to tell that this firmware is on.
 
 Stock, Fn+W, E and R mute and step an amp on GP18 inside the keyboard, and the
 host never hears about it. Here they send the standard Mute, Volume Down and
-Volume Up keys, so PipeWire holds the level and the bar shows it.
-
-The amp's gain is a setting instead: how loud full volume is. The firmware
-reads `A<0-10>` and `A?` and answers `PT35 A=<n>`. It keeps the step in NVM, so
-the amp comes back at it after a power cycle. Until the first `A<n>` it boots at
-5, as stock does. Settings > Speaker amp and `pt35ctl speaker` set it.
+Volume Up keys, so PipeWire holds the level and the bar shows it. The amp stays
+at its boot level.
 
 ## Flashing
 

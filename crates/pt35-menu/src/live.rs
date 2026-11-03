@@ -96,11 +96,6 @@ pub fn state_value(field: StateField, status: Option<&Status>) -> String {
         StateField::Volume => value(Adjust::Volume, Some(status)),
         StateField::Brightness => value(Adjust::Brightness, Some(status)),
         StateField::Scale => value(Adjust::Scale, Some(status)),
-        // Firmware that does not answer keeps the amp on its own keys.
-        StateField::Speaker => status
-            .speaker_step
-            .map(|step| format!("{step}/10"))
-            .unwrap_or_else(|| "Fn  E  R".into()),
         StateField::Network => status.network.clone().unwrap_or_else(|| "offline".into()),
     }
 }
@@ -165,19 +160,6 @@ mod tests {
         };
         assert_eq!(state_value(StateField::Mode, Some(&s)), "MOUSE");
         assert_eq!(state_value(StateField::Mode, None), "--");
-    }
-
-    #[test]
-    fn the_speaker_reads_its_step_or_its_keys() {
-        let s = Status {
-            speaker_step: Some(7),
-            ..status()
-        };
-        assert_eq!(state_value(StateField::Speaker, Some(&s)), "7/10");
-        assert_eq!(
-            state_value(StateField::Speaker, Some(&status())),
-            "Fn  E  R"
-        );
     }
 
     #[test]
