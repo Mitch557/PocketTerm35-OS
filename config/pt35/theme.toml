@@ -78,6 +78,11 @@ scrollbar_width = 8      # also a target: click the track, drag the thumb
 color_scheme  = "dark"
 gtk_dark      = "Adwaita-dark"
 gtk_light     = "Adwaita"
+# fixed: an app with a workspace in apps.toml lives on it, the rest on 10 up.
+# dynamic: apps line up in the order they open, and closing one shifts the
+# rest down. Reorder them with , and . in the window switcher. Also a switch
+# in Settings > Menu. By hand, run pt35ctl reload after editing.
+workspaces    = "fixed"
 
 # Papirus is packaged and readable at this size. Anything the theme does not
 # have falls back to a letter in a coloured badge.
