@@ -4,26 +4,57 @@
 use crate::canvas::Canvas;
 use pt35_common::theme::Rgb;
 
-/// The menu button's skull: the terminal logo (`config/fastfetch/skull.txt`)
-/// read as half blocks, so the two are the same shape. 15x16.
+/// The menu button's mark: the Weyland-Yutani W, its three notches cut out
+/// with a one-pixel gap so they read in one colour. 19x8. Still called SKULL,
+/// so this stays a one-file change against upstream.
 pub const SKULL: &[&str] = &[
-    "....#######....",
-    "..###########..",
-    ".#############.",
-    "###############",
-    "###############",
-    "###...###...###",
-    "##....###....##",
-    "##....###....##",
-    "##....###....##",
-    "###..##.##..###",
-    "######...######",
-    ".#####...#####.",
-    "..###########..",
-    "...#.#.#.#.#...",
-    "...#.#.#.#.#...",
-    "...#########...",
+    "###.###.###.###.###",
+    ".###.#.#####.#.###.",
+    "..###..#####..###..",
+    "...###.##.##.###...",
+    "....#####.#####....",
+    "....####.#.####....",
+    "....###.###.###....",
+    "....##.#####.##....",
 ];
+
+/// The W's gold, the same as the fastfetch logo's.
+pub const SKULL_GOLD: Rgb = Rgb(0xff, 0xcc, 0x00);
+
+/// The W at the fastfetch logo's size, 22x12, for the switcher's Launcher
+/// card: the gold arms here, the grey notches in [`SKULL_BIG_GREY`].
+pub const SKULL_BIG_GOLD: &[&str] = &[
+    "###.......##.......###",
+    "####.....####.....####",
+    ".###.....####.....###.",
+    ".####...######...####.",
+    "..###...######...###..",
+    "..####.########.####..",
+    "...###.###..###.###...",
+    "...#######..#######...",
+    "...######....######...",
+    "....#####....#####....",
+    "....####......####....",
+    ".....###......###.....",
+];
+
+pub const SKULL_BIG_GREY: &[&str] = &[
+    ".....###......###.....",
+    ".....###......###.....",
+    "......#........#......",
+    "......................",
+    "......................",
+    "......................",
+    "......................",
+    "......................",
+    "......................",
+    "..........##..........",
+    "..........##..........",
+    ".........####.........",
+];
+
+/// The notches' grey, the same as the fastfetch logo's.
+pub const SKULL_GREY: Rgb = Rgb(0xbe, 0xbe, 0xbe);
 
 /// The launcher's mark for a pinned app, 5x8.
 pub const PIN: &[&str] = &[
@@ -114,16 +145,30 @@ mod tests {
 
     #[test]
     fn the_skull_is_a_rectangle_of_known_size() {
-        assert!(SKULL.iter().all(|row| row.len() == 15));
-        assert_eq!(size(SKULL, 1), (15, 16));
+        assert!(SKULL.iter().all(|row| row.len() == 19));
+        assert_eq!(size(SKULL, 1), (19, 8));
+    }
+
+    #[test]
+    fn the_big_w_has_two_layers_of_one_size() {
+        assert_eq!(size(SKULL_BIG_GOLD, 1), (22, 12));
+        assert_eq!(size(SKULL_BIG_GREY, 1), (22, 12));
+        assert!(SKULL_BIG_GOLD
+            .iter()
+            .chain(SKULL_BIG_GREY)
+            .all(|row| row.len() == 22));
     }
 
     #[test]
     fn ink_lands_only_where_the_bitmap_says() {
-        let mut canvas = Canvas::new(15, 16);
+        let mut canvas = Canvas::new(19, 8);
         let ink = Rgb(0xff, 0xff, 0xff);
         draw(&mut canvas, SKULL, 0, 0, 1, ink);
-        assert_eq!(canvas.pixel(4, 0), ink.to_argb8888(), "top of the dome");
-        assert_ne!(canvas.pixel(4, 6), ink.to_argb8888(), "an eye is a hole");
+        assert_eq!(canvas.pixel(0, 0), ink.to_argb8888(), "top of the left arm");
+        assert_ne!(
+            canvas.pixel(3, 0),
+            ink.to_argb8888(),
+            "the gap round a notch"
+        );
     }
 }
