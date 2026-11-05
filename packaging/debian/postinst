@@ -101,6 +101,38 @@ modprobe uinput 2>/dev/null || true
 udevadm control --reload 2>/dev/null || true
 udevadm trigger --name-match=uinput 2>/dev/null || true
 
+# -------------------------------------------------------------------- wifi
+# Pi Imager's Wi-Fi comes in through cloud-init as netplan YAML. Raspberry Pi
+# OS's NetworkManager writes changes to those profiles back into /etc/netplan,
+# and can leave the file empty: the network is then gone at the next boot.
+# Keyfiles in /etc/NetworkManager do not have that problem, so each netplan
+# profile is copied into one and the YAML goes to a backup. cloud-init is told
+# to stop writing new YAML. Not undone by prerm: these are the user's networks.
+move_netplan_profiles() {
+  generated=/run/NetworkManager/system-connections
+  ls "$generated"/netplan-*.nmconnection >/dev/null 2>&1 || return 0
+  command -v netplan >/dev/null 2>&1 || return 0
+  for profile in "$generated"/netplan-*.nmconnection; do
+    uuid=$(sed -n 's/^uuid=//p' "$profile")
+    [ -n "$uuid" ] || continue
+    # The same UUID, so an active connection carries on through the reload.
+    # "netplan-wlan0-Home" becomes "Home".
+    sed 's/^id=netplan-[^-]*-\(..*\)$/id=\1/' "$profile" \
+      > "/etc/NetworkManager/system-connections/pt35-$uuid.nmconnection"
+    chmod 600 "/etc/NetworkManager/system-connections/pt35-$uuid.nmconnection"
+  done
+  backup=/var/backups/pt35-netplan
+  install -d -m700 "$backup"
+  for yaml in /etc/netplan/*.yaml; do
+    [ -e "$yaml" ] && mv "$yaml" "$backup/"
+  done
+  if [ -d /etc/cloud/cloud.cfg.d ]; then
+    echo 'network: {config: disabled}' > /etc/cloud/cloud.cfg.d/99-pt35-network.cfg
+  fi
+  netplan generate && nmcli connection reload
+}
+move_netplan_profiles || echo "pt35-desktop: could not move netplan Wi-Fi profiles; see /var/backups/pt35-netplan" >&2
+
 # ---------------------------------------------------------------- services
 install -d /etc/systemd/logind.conf.d
 if [ -f "$SHARE/logind/pt35.conf" ]; then
