@@ -2043,6 +2043,13 @@ impl Menu {
         // The launcher is never closed from inside it, desktop or not.
         let pinned = self.is_desktop() || (rooted && self.model.launcher_is_root());
         let on_home_tile = self.model.selected_payload() == Some(providers::HOME);
+        let on_drive = (self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Drives))
+            .then(|| {
+                let at = self.model.screen().list.selected()?;
+                let item = self.model.dynamic_items()?.get(at)?;
+                (!item.payload.is_empty()).then_some(item.active)
+            })
+            .flatten();
         let hints: Vec<Hint> = hints
             .iter()
             // At the top screen there is nowhere to go home to, and on the
@@ -2063,6 +2070,13 @@ impl Menu {
                 }
             })
             .filter(|hint| !self.model.is_confirm() || hint.button != "X")
+            .map(|hint| match on_drive {
+                Some(mounted) if hint.button == "A" => Hint {
+                    button: "A",
+                    action: if mounted { "Eject" } else { "Mount" },
+                },
+                _ => hint,
+            })
             // Nothing to open on a dashboard or an empty list, nothing to find
             // on a dashboard.
             .filter(|hint| !((readonly || empty) && !filtering && hint.button == "A"))
@@ -2232,6 +2246,15 @@ impl App for Menu {
             }
             if on_bluetooth && self.loading.is_none() {
                 self.resync();
+            }
+        }
+        // Drives come and go without the daemon knowing, and pt35-drive works
+        // detached, so its notes land after the press.
+        if self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Drives) {
+            let items = providers::items(pt35_common::menu::Builtin::Drives);
+            if self.model.dynamic_items() != Some(items.as_slice()) {
+                self.model.replace_dynamic(items);
+                drawn = true;
             }
         }
         let status = crate::live::status();

@@ -51,6 +51,15 @@ pub fn previews_dir() -> PathBuf {
     run.join("pt35").join("previews")
 }
 
+/// One line per drive that `pt35-drive` is working on or failed on, which the
+/// Drives screen shows as the row's note.
+pub fn drives_dir() -> PathBuf {
+    let run = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    run.join("pt35").join("drives")
+}
+
 pub fn socket_path() -> PathBuf {
     let run = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)

@@ -747,7 +747,10 @@ impl Model {
                         _ => Step::Nothing,
                     }
                 }
-                Some(payload) if builtin == Builtin::Bluetooth && payload.starts_with("sh:") => {
+                Some(payload)
+                    if matches!(builtin, Builtin::Bluetooth | Builtin::Drives)
+                        && payload.starts_with("sh:") =>
+                {
                     Step::RunStay(Command::Helper(payload["sh:".len()..].to_string()))
                 }
                 Some(payload) => Step::Run(Command::Dynamic {

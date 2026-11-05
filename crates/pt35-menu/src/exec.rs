@@ -80,7 +80,8 @@ fn dynamic(builtin: Builtin, payload: &str) -> Plan {
         | Builtin::Accent
         | Builtin::Clock
         | Builtin::Animations
-        | Builtin::About => Plan::Nothing,
+        | Builtin::About
+        | Builtin::Drives => Plan::Nothing,
     }
 }
 

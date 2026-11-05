@@ -1,0 +1,75 @@
+#!/bin/sh
+# pt35-drive: mount and eject USB drives and SD cards for the Drives screen.
+#
+# The menu runs this detached, so it never sees what fails. While it works, and
+# when it fails, each device gets one line in $XDG_RUNTIME_DIR/pt35/drives/,
+# which the screen shows as that row's note. udisks does the mounting, so no
+# sudo: drives land in /media/$USER/<label>.
+set -u
+export LC_ALL=C.UTF-8
+unset LANGUAGE
+
+usage() {
+  echo "usage: pt35-drive toggle|mount|eject DEVICE" >&2
+  exit 2
+}
+
+[ $# -eq 2 ] || usage
+command -v udisksctl >/dev/null || { echo "udisksctl is not installed (udisks2)" >&2; exit 1; }
+
+dev=$2
+dir=${XDG_RUNTIME_DIR:-/tmp}/pt35/drives
+mkdir -p "$dir"
+state=$dir/$(basename "$dev")
+
+say() { printf '%s\n' "$1" > "$state"; }
+
+# udisks answers with D-Bus error names. Keep what a person can act on.
+fail() {
+  case "$2" in
+    *DeviceBusy*|*"target is busy"*) say "in use: close what is open on it" ;;
+    *NotAuthorized*) say "not allowed" ;;
+    *) say "$1 failed" ;;
+  esac
+  echo "$2" >&2
+  exit 1
+}
+
+mount_it() {
+  say "mounting..."
+  err=$(udisksctl mount -b "$dev" --no-user-interaction 2>&1 >/dev/null) || fail mount "$err"
+  rm -f "$state"
+}
+
+eject_it() {
+  disk=$(lsblk -dno PKNAME "$dev")
+  if [ -n "$disk" ]; then disk=/dev/$disk; else disk=$dev; fi
+  say "ejecting..."
+  for part in $(lsblk -lnpo PATH,MOUNTPOINT "$disk" | awk 'NF > 1 { print $1 }'); do
+    # A file manager that has just left the drive lets go a moment later.
+    tries=0
+    until err=$(udisksctl unmount -b "$part" --no-user-interaction 2>&1 >/dev/null); do
+      tries=$((tries + 1))
+      case "$err" in
+        *DeviceBusy*|*"target is busy"*) [ "$tries" -lt 4 ] || fail eject "$err" ;;
+        *) fail eject "$err" ;;
+      esac
+      sleep 0.5
+    done
+  done
+  # A USB drive is powered down too, so it vanishes from the list. An SD card
+  # has no such switch: unmounted is safe to pull.
+  if [ "$(lsblk -dno TRAN "$disk")" = usb ]; then
+    udisksctl power-off -b "$disk" --no-user-interaction >/dev/null 2>&1 || true
+  fi
+  rm -f "$state"
+}
+
+case "$1" in
+  mount) mount_it ;;
+  eject) eject_it ;;
+  toggle)
+    if [ -n "$(lsblk -no MOUNTPOINT "$dev")" ]; then eject_it; else mount_it; fi
+    ;;
+  *) usage ;;
+esac

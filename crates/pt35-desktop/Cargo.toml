@@ -25,7 +25,7 @@ app per workspace on a 640x480 panel, driven entirely from the built-in \
 keyboard and D-pad. sway does the compositing; pt35-desktop adds the status \
 bar, the menu/launcher, the session daemon and a keyboard-driven mouse."""
 depends = "sway, swaybg, swayidle, foot, seatd, greetd, keyd, libc6, libxkbcommon0, fonts-dejavu-core, grim, wtype, psmisc, libglib2.0-bin, python3-serial"
-recommends = "network-manager, bluez, swaylock, fastfetch, ncdu, bibata-cursor-theme, papirus-icon-theme, qt5-gtk-platformtheme, qt6-gtk-platformtheme, htop, pipewire, wireplumber, pipewire-pulse, xdg-desktop-portal-wlr, wl-clipboard, xwayland, i2c-tools"
+recommends = "network-manager, bluez, udisks2, swaylock, fastfetch, ncdu, bibata-cursor-theme, papirus-icon-theme, qt5-gtk-platformtheme, qt6-gtk-platformtheme, htop, pipewire, wireplumber, pipewire-pulse, xdg-desktop-portal-wlr, wl-clipboard, xwayland, i2c-tools"
 # The apps in the shipped apps.toml. The launcher says so when one is missing.
 suggests = "mousepad, vlc, imv, mpv, chromium, galculator"
 # cargo-deb rewrites a leading "target/release/" to the real (workspace) target
@@ -38,6 +38,7 @@ assets = [
     ["../../scripts/pt35-session", "usr/bin/", "755"],
     ["../../scripts/pt35-kbd", "usr/bin/", "755"],
     ["../../scripts/pt35-quick", "usr/bin/", "755"],
+    ["../../scripts/pt35-drive", "usr/bin/", "755"],
     ["../../scripts/pt35-hello", "usr/bin/", "755"],
     ["../../scripts/pt35-ai", "usr/bin/", "755"],
     ["../../config/systemd/pt35-ai.service", "usr/lib/systemd/system/", "644"],
