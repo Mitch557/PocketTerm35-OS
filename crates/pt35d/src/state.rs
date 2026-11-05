@@ -79,6 +79,10 @@ pub struct Session {
     sent_rules: Vec<String>,
     /// The last placement sent to sway, and when.
     last_placement: Option<(String, std::time::Instant)>,
+    /// Dynamic workspaces: tiled windows, first to last.
+    order: Vec<i64>,
+    /// False until the first arrangement, when every window counts as new.
+    order_settled: bool,
 }
 
 /// How long a launch suppresses the empty-desktop menu. Long enough for a slow
@@ -153,6 +157,8 @@ impl Session {
             closing: Vec::new(),
             sent_rules: Vec::new(),
             last_placement: None,
+            order: Vec::new(),
+            order_settled: false,
         };
         if let Err(e) = session.menu.validate() {
             log::error!("menu.toml is inconsistent ({e}); the menu key will show an error page");
@@ -434,6 +440,11 @@ impl Session {
     /// focus has moved on and lands on the wrong workspace. An assign rule is
     /// evaluated when the window appears, so timing stops mattering.
     fn apply_assignments(&mut self) {
+        // Dynamic workspaces place windows themselves. sway cannot take an
+        // assign back, so leaving fixed mode needs a sway reload.
+        if self.dynamic() {
+            return;
+        }
         for rule in crate::placement::assign_rules(&self.apps) {
             self.send_rule(rule);
         }
@@ -672,9 +683,13 @@ impl Session {
         // The whole tree: a window asked to close holds its workspace until
         // it has gone.
         let windows = pt35_common::sway::windows(tree);
-        let closing = self.closing_ids();
-        let plan = crate::placement::plan(&windows, &self.apps, front, &closing);
-        let Some(cmd) = plan.command() else {
+        let cmd = if self.dynamic() {
+            self.dynamic_plan(&windows, front)
+        } else {
+            let closing = self.closing_ids();
+            crate::placement::plan(&windows, &self.apps, front, &closing).command()
+        };
+        let Some(cmd) = cmd else {
             return false;
         };
         // The same plan again means the last one did not take: sway put a
@@ -703,6 +718,50 @@ impl Session {
             .collect()
     }
 
+    fn dynamic(&self) -> bool {
+        self.theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic
+    }
+
+    /// Dynamic workspaces: the command that puts tiled window `i` on
+    /// workspace `i + 1` and moves focus to match. A window asked to close
+    /// keeps its place until it has gone.
+    fn dynamic_plan(&mut self, windows: &[pt35_common::sway::Window], front: u8) -> Option<String> {
+        use crate::workspaces::{command, focus_after, plan};
+        let in_front = windows
+            .iter()
+            .find(|w| w.workspace == front && !w.floating)
+            .map(|w| w.id);
+        let plan = plan(&self.order, windows);
+        let focus = focus_after(&plan, in_front, front, self.order_settled);
+        self.order_settled = true;
+        let cmd = command(&plan, focus);
+        self.order = plan.order;
+        cmd
+    }
+
+    /// The empty workspace past the last app, where the launcher is.
+    fn home_workspace(&self) -> u8 {
+        u8::try_from(self.order.len() + 1).unwrap_or(u8::MAX)
+    }
+
+    /// `[apps] workspaces` was switched. Start the new mode from the windows as
+    /// they are, rather than from an order kept from an earlier stint.
+    fn workspace_mode_changed(&mut self) {
+        self.order.clear();
+        self.order_settled = false;
+        self.last_placement = None;
+        if self.dynamic() {
+            // sway cannot take an assign back, and the fixed ones would send
+            // each app to its own workspace. A reload drops them, and pt35d
+            // puts its bindings back when it sees the reload event.
+            if let Err(e) = self.sway_command("reload") {
+                log::warn!("reloading sway for dynamic workspaces: {e}");
+            }
+        }
+        // Back to fixed, placement sends every app home on this pass.
+        self.refresh_windows();
+    }
+
     /// Go where a launched app's window will be put, before it maps, so it
     /// opens in front. `owns` is the workspace its profile owns. Only for a
     /// profile: an app profile always makes a window.
@@ -720,7 +779,11 @@ impl Session {
             .and_then(|s| s.focused_workspace())
             .unwrap_or(self.status.workspace);
         let closing = self.closing_ids();
-        let target = crate::placement::launch_target(&windows, &self.apps, owns, front, &closing);
+        let target = if self.dynamic() {
+            self.home_workspace()
+        } else {
+            crate::placement::launch_target(&windows, &self.apps, owns, front, &closing)
+        };
         if target != front {
             self.sway_command(&format!("workspace number {target}"))?;
         }
@@ -960,6 +1023,19 @@ impl Session {
                         self.close_window(target)?;
                     }
                     WindowAction::CloseId(id) => self.close_window(id)?,
+                    WindowAction::MoveLeft(id) | WindowAction::MoveRight(id) => {
+                        if !self.dynamic() {
+                            bail!("reordering needs dynamic workspaces");
+                        }
+                        self.refresh_windows();
+                        let left = matches!(action, WindowAction::MoveLeft(_));
+                        if crate::workspaces::shift(&mut self.order, id, left) {
+                            // Back and forth repeats a plan, and a repeat
+                            // within PLACEMENT_RETRY would not be sent.
+                            self.last_placement = None;
+                            self.refresh_windows();
+                        }
+                    }
                     WindowAction::CloseAll => {
                         self.sync_windows();
                         let ids: Vec<i64> = self.status.windows.iter().map(|w| w.id).collect();
@@ -1031,6 +1107,7 @@ impl Session {
             }
 
             Request::Reload => {
+                let was_dynamic = self.dynamic();
                 // Check the new files before taking them, so a reload that
                 // fails leaves the running config as it was.
                 let menu: MenuTree = load_or_default("pt35/menu.toml");
@@ -1045,6 +1122,9 @@ impl Session {
                 apply_color_scheme(&self.theme);
                 apply_animations(&self.theme);
                 apply_cursor(&self.theme.pointer);
+                if self.dynamic() != was_dynamic {
+                    self.workspace_mode_changed();
+                }
                 hooks::fire("reload", &[]);
                 self.notify("Config reloaded", 0);
                 Ok(Response::Ok)
@@ -1203,8 +1283,9 @@ impl Session {
         // otherwise, because every app owns one. Closing one behind it from the
         // switcher must leave you where you are.
         let current = self.current_window().map(|w| w.id) == Some(id);
-        let next =
-            next_window(&self.status.windows, self.status.workspace, true).filter(|_| current);
+        // Dynamic workspaces land on the launcher instead.
+        let next = next_window(&self.status.windows, self.status.workspace, true)
+            .filter(|_| current && !self.dynamic());
         // A GTK app ignores a close while its menu bar is open, and Y opens it.
         // Only the focused window can have a menu open.
         if self.status.windows.iter().any(|w| w.id == id && w.focused) {
@@ -1213,6 +1294,11 @@ impl Session {
         self.sway_command(&format!("[con_id={id}] kill"))?;
         self.status.windows.retain(|w| w.id != id);
         self.closing.push((id, std::time::Instant::now()));
+        if current && self.dynamic() {
+            let home = self.home_workspace();
+            self.sway_command(&format!("workspace number {home}"))?;
+            self.status.workspace = home;
+        }
         if let Some(next) = next.filter(|next| *next != id) {
             let _ = self.sway_command(&format!("[con_id={next}] focus"));
             for window in &mut self.status.windows {

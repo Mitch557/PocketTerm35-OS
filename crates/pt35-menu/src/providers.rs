@@ -1313,7 +1313,11 @@ fn bar_options() -> Items {
 
 /// The menu, the launcher and the switcher.
 fn menu_options() -> Items {
-    let menu = pt35_common::load_theme().menu;
+    let theme = pt35_common::load_theme();
+    let menu = theme.menu;
+    // pt35d sees the change on the reload the pick sends, and reloads sway or
+    // moves the open apps home as the new mode needs.
+    let dynamic = theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic;
     vec![
         switch_row(
             "Row numbers",
@@ -1332,6 +1336,15 @@ fn menu_options() -> Items {
             &format!("menu.show_desktop_entries={}", !menu.show_desktop_entries),
             menu.show_desktop_entries,
             "applications-all",
+        ),
+        switch_row(
+            "Dynamic workspaces",
+            &format!(
+                "apps.workspaces={}",
+                if dynamic { "fixed" } else { "dynamic" }
+            ),
+            dynamic,
+            "view-grid",
         ),
     ]
 }

@@ -110,6 +110,11 @@ const WINDOW_HINTS: &[Hint] = &[
         button: "←→",
         action: "Move",
     },
+    // The , and . keys, under < and >. Dynamic workspaces only.
+    Hint {
+        button: "<>",
+        action: "Reorder",
+    },
     Hint {
         button: "A",
         action: "Focus",
@@ -211,6 +216,9 @@ pub struct Menu {
     /// Where the switcher's strip is held while the pointer drives it. `None`
     /// off the switcher.
     strip_scroll: Option<i32>,
+    /// A reorder in progress on the switcher. The moved card holds the middle
+    /// while the strip glides, and its neighbour passes under it.
+    swap: Option<Swap>,
     /// The last thing that moved the selection was the pointer, not a key.
     pointer_driven: bool,
     /// The right-click menu, while it is up.
@@ -310,6 +318,16 @@ struct Motion {
     from: Option<i32>,
     to: Option<i32>,
     moved: std::time::Instant,
+}
+
+/// The card a reorder swapped with the selected one, and which way.
+struct Swap {
+    neighbour: String,
+    /// Slots the selected card moved: -1 left, +1 right.
+    slots: i32,
+    at: std::time::Instant,
+    /// The glide's length at the speed in use.
+    span: Duration,
 }
 
 /// How far a new screen rises as it settles.
@@ -416,6 +434,7 @@ impl Menu {
             status,
             row_hits: Vec::new(),
             strip_scroll: None,
+            swap: None,
             pointer_driven: false,
             popup: None,
             crumb_hits: Vec::new(),
@@ -630,6 +649,7 @@ impl Menu {
             // In Mouse mode B is the right button, and its pill says Options.
             "B" if self.mouse_mode() => return self.options_here(),
             "←→" => Key::new(pt35_ui::keys::sym::RIGHT),
+            "<>" => return self.reorder("right"),
             "Bksp" => Key::new(pt35_ui::keys::sym::BACKSPACE),
             "↑↓" => Key::new(pt35_ui::keys::sym::DOWN),
             // The button's own keysym, not its letter: with the pt35
@@ -727,6 +747,43 @@ impl Menu {
             Ok(_) => Ok(()),
             Err(message) => Err(message),
         }
+    }
+
+    /// Move the switcher card under the cursor one place, `left` or `right`.
+    fn reorder(&mut self, side: &str) -> bool {
+        let id = self
+            .model
+            .selected_payload()
+            .and_then(|p| p.strip_prefix("con:"))
+            .map(str::to_string);
+        if let Some(id) = id {
+            let before = self.model.screen().list.cursor_index();
+            if let Err(message) = self.ctl(&["window", side, &id]) {
+                self.error = Some(message);
+            }
+            self.resync();
+            let after = self.model.screen().list.cursor_index();
+            let neighbour = self
+                .model
+                .visible_rows()
+                .get(before)
+                .map(|row| row.payload.clone());
+            let span = pt35_common::theme::animation_spans(self.theme.menu.animations);
+            self.swap = match (neighbour, span) {
+                (Some(neighbour), Some((span, _))) if after != before => Some(Swap {
+                    neighbour,
+                    slots: after as i32 - before as i32,
+                    at: std::time::Instant::now(),
+                    span,
+                }),
+                _ => None,
+            };
+        }
+        true
+    }
+
+    fn dynamic_workspaces(&self) -> bool {
+        self.theme.apps.workspaces == pt35_common::theme::WorkspaceMode::Dynamic
     }
 
     /// Re-read the daemon and rebuild the current screen from it.
@@ -1733,8 +1790,34 @@ impl Menu {
         let name_size = theme.font.size_menu * 0.85;
         let note_size = theme.font.size_hint * 0.85;
         let radius = theme.menu.radius;
-        for (index, row) in rows.iter().enumerate() {
-            let x = pad + index as i32 * (card_w + gap) - scroll;
+        // During a reorder the moved card holds the middle and is drawn last,
+        // over the neighbour sliding under it to its new side.
+        let slot = card_w + gap;
+        let swap = self
+            .swap
+            .as_ref()
+            .filter(|swap| swap.at.elapsed() < swap.span)
+            .map(|swap| {
+                let left = 1.0 - ease(swap.at.elapsed(), swap.span);
+                (swap.neighbour.clone(), (swap.slots * slot) as f32 * left)
+            });
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        if swap.is_some() {
+            order.retain(|index| *index as i32 != cursor);
+            order.push(cursor as usize);
+        }
+        for index in order {
+            let Some(row) = rows.get(index) else {
+                continue;
+            };
+            let mut x = pad + index as i32 * slot - scroll;
+            if let Some((neighbour, offset)) = &swap {
+                if index as i32 == cursor {
+                    x = (width - card_w) / 2;
+                } else if row.payload == *neighbour {
+                    x += *offset as i32;
+                }
+            }
             if x + card_w < 0 || x > width {
                 continue;
             }
@@ -2109,6 +2192,7 @@ impl Menu {
                 (!item.payload.is_empty()).then_some(item.active)
             })
             .flatten();
+        let dynamic = self.dynamic_workspaces();
         let hints: Vec<Hint> = hints
             .iter()
             // At the top screen there is nowhere to go home to, and on the
@@ -2118,6 +2202,8 @@ impl Menu {
             // B as Back, that is. In Mouse mode it is the right button.
             .filter(|hint| !(pinned && hint.button == "B" && !mouse))
             .filter(|hint| !(on_switcher && on_home_tile && hint.action == "Close"))
+            // The Launcher card has no place in the order to change.
+            .filter(|hint| hint.button != "<>" || (dynamic && !on_home_tile))
             .map(|hint| {
                 if on_switcher && on_home_tile && hint.button == "A" {
                     Hint {
@@ -2418,6 +2504,18 @@ impl App for Menu {
                 };
             }
             _ => {}
+        }
+        // , and . are the keys under < and >: they move the card under the
+        // cursor one place. pt35d says no unless workspaces are dynamic.
+        if self.model.dynamic_builtin() == Some(pt35_common::menu::Builtin::Windows) {
+            let side = match key.text {
+                Some(',' | '<') => Some("left"),
+                Some('.' | '>') => Some("right"),
+                _ => None,
+            };
+            if let Some(side) = side {
+                return self.reorder(side);
+            }
         }
         if self.on_launcher() {
             let mode = self.model.screen().list.mode();

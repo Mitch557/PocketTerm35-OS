@@ -51,7 +51,8 @@ group, which the installer sets up.
 | Start, Escape | close the menu |
 
 On the window switcher: left and right move, A switches, B goes back to your
-app, Y and L close one window, X closes all of them (it asks first).
+app, Y and L close one window, X closes all of them (it asks first). With
+dynamic workspaces, `,` and `.` move the window one place left or right.
 
 The launcher never closes from inside. You leave it by picking an app or a
 window, or with Start. With no window open, the menu is the desktop and stays.
@@ -116,6 +117,18 @@ There is no tiling. One window owns the screen, and each window gets a
 workspace of its own. An app with a workspace in `apps.toml` is always on it,
 so Super + its number finds it. Everything else, a second terminal included,
 goes to 10 and up: Super + Tab, the dock or the switcher reach those.
+
+## Workspaces
+
+`[apps] workspaces` in `theme.toml` picks how windows get one.
+
+- `fixed`, the default: as above. Super + 2 is always Files.
+- `dynamic`: windows line up on 1, 2, 3 in the order they open, and a new one
+  goes on the end. Close one and the rest shift down, and you land on the
+  launcher. Reorder them on the window switcher with `,` and `.`.
+
+Switch in Settings > Menu > Dynamic workspaces. Open windows move at once:
+to 1, 2, 3 for dynamic, or to their own workspaces for fixed.
 
 ## Keyboard firmware
 
