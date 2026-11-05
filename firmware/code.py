@@ -574,7 +574,8 @@ class KeyboardController:
         self.pin_manager.add_digital_output("gp19", board.GP19, False)
         self.pin_manager.add_digital_output("gp21", board.GP21, False)
         self.pin_manager.add_pwm_output("bl_pwm", board.GP20, duty_cycle=5000)
-        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=32700)
+        # pt35-desktop: the amp runs at full; the host's volume is the only level.
+        self.pin_manager.add_pwm_output("ad_pwm", board.GP18, duty_cycle=Config.PWM_MAX)
     
     def _setup_controllers(self):
         """设置功能控制器"""
@@ -590,9 +591,13 @@ class KeyboardController:
     def _setup_special_functions(self):
         """设置特殊功能映射"""
         self._special_functions = {
-            CustomKeycodes.FN_MUTE: lambda: self.pin_manager.toggle_pin("gp19"),
-            CustomKeycodes.FN_VOLUME_DOWN: self.ad_pwm.decrease,
-            CustomKeycodes.FN_VOLUME_UP: self.ad_pwm.increase,
+            # pt35-desktop: volume is the host's, so the shell can show the
+            # level. The amp on GP18 stays at full.
+            CustomKeycodes.FN_MUTE: lambda: self._tap_consumer(ConsumerControlCode.MUTE),
+            CustomKeycodes.FN_VOLUME_DOWN:
+                lambda: self._tap_consumer(ConsumerControlCode.VOLUME_DECREMENT),
+            CustomKeycodes.FN_VOLUME_UP:
+                lambda: self._tap_consumer(ConsumerControlCode.VOLUME_INCREMENT),
             CustomKeycodes.FN_LOCK_SCREEN: self._lock_screen,
             CustomKeycodes.FN_BL_CONTROL_SCREEN: self._toggle_breathing_light,
             CustomKeycodes.FN_BL_PWM_DOWN: self.bl_pwm.decrease,
@@ -714,6 +719,11 @@ class KeyboardController:
             self.hid.press_consumer(ConsumerControlCode.SCAN_PREVIOUS_TRACK)
             self.hid.release_consumer()
     
+    def _tap_consumer(self, code):
+        if self.hid.is_initialized:
+            self.hid.press_consumer(code)
+            self.hid.release_consumer()
+
     def _play_pause(self):
         if self.hid.is_initialized:
             self.hid.press_consumer(ConsumerControlCode.PLAY_PAUSE)
